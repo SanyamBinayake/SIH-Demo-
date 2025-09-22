@@ -2,11 +2,16 @@ from flask import Flask, jsonify, request
 import requests
 import os
 from dotenv import load_dotenv
+import base64  # For Basic Auth encoding
 
 # Load secrets from .env
 load_dotenv()
 CLIENT_ID = os.getenv("WHO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("WHO_CLIENT_SECRET")
+
+# Validate credentials loaded
+if not CLIENT_ID or not CLIENT_SECRET:
+    print("Warning: WHO_CLIENT_ID or WHO_CLIENT_SECRET not found in .env file!")
 
 app = Flask(__name__)
 
@@ -19,14 +24,21 @@ def home():
 
 @app.route("/token")
 def get_token():
-    """Fetch access token from WHO API"""
+    """Fetch access token from WHO API using Basic Auth"""
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return jsonify({"error": "Missing CLIENT_ID or CLIENT_SECRET"}), 400
+
+    # Basic Auth header: base64(client_id:client_secret)
+    credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    headers = {
+        "Authorization": f"Basic {encoded_credentials}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
     data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
         "scope": "icdapi_access",
         "grant_type": "client_credentials"
     }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
     r = requests.post(TOKEN_URL, data=data, headers=headers)
     return jsonify(r.json())
@@ -36,15 +48,21 @@ def search_icd():
     """Search ICD-11 API with query parameter ?q=term"""
     q = request.args.get("q", "epilepsy")
 
-    # First get token
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return jsonify({"error": "Missing CLIENT_ID or CLIENT_SECRET"}), 400
+
+    # First get token using Basic Auth
+    credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    token_headers = {
+        "Authorization": f"Basic {encoded_credentials}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    token_data = {
         "scope": "icdapi_access",
         "grant_type": "client_credentials"
     }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    r = requests.post(TOKEN_URL, data=data, headers=headers)
+    r = requests.post(TOKEN_URL, data=token_data, headers=token_headers)
     token = r.json().get("access_token")
 
     if not token:
