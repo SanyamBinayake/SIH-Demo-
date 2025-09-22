@@ -99,7 +99,7 @@ if query:
     with tab2:
         with st.spinner("Fetching ICD results..."):
             try:
-                r = requests.get(f"http://localhost:5000/search?q={query}")
+                r = requests.get(f"http://127.0.0.1:5000/search?q={query}")
                 if r.status_code == 200:
                     data = r.json()
                     icd_results = data.get("results", [])
