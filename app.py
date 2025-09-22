@@ -2,6 +2,12 @@ import streamlit as st
 import pandas as pd
 import re
 import requests
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+FLASK_URL = os.getenv("FLASK_URL", "http://127.0.0.1:5000")  # Default to local for testing
 
 # --------------------
 # Helper Functions
@@ -20,7 +26,6 @@ def load_data():
         df[col] = df[col].apply(clean_html)
 
     return df
-
 
 # --------------------
 # Pagination (Load More style)
@@ -53,8 +58,7 @@ def show_with_load_more(results, section_key, page_size=5, source="namaste"):
     if visible_count < total:
         if st.button("Load More", key=f"loadmore_{section_key}"):
             st.session_state[section_key] += page_size
-            st.rerun()  # ✅ Streamlit 1.25+
-
+            st.rerun()  # Streamlit 1.25+
 
 # --------------------
 # Streamlit UI
@@ -71,7 +75,7 @@ if query:
     tab1, tab2 = st.tabs(["📘 NAMASTE Terminology", "🌍 WHO ICD-11 Terminology"])
 
     # --------------------
-    # NAMASTE Tab
+    # NAMASTE Tab (Unchanged - Using CSV)
     # --------------------
     with tab1:
         namaste_results = df[
@@ -94,12 +98,12 @@ if query:
             st.warning("No matches found in NAMASTE dataset.")
 
     # --------------------
-    # WHO ICD Tab
+    # WHO ICD Tab (Updated for Render)
     # --------------------
     with tab2:
-        with st.spinner("Fetching ICD results..."):
+        with st.spinner("Fetching ICD results... (May take ~15s due to Render cold start)"):
             try:
-                r = requests.get(f"http://127.0.0.1:5000/search?q={query}")
+                r = requests.get(f"{FLASK_URL}/search?q={query}", timeout=30)  # Timeout for cold start
                 if r.status_code == 200:
                     data = r.json()
                     icd_results = data.get("results", [])
@@ -111,9 +115,11 @@ if query:
                     else:
                         st.warning("No results returned from WHO ICD API.")
                 else:
-                    st.error(f"Error from WHO API: {r.text}")
+                    st.error(f"Error from WHO API via Render: {r.status_code} - {r.text}")
+            except requests.Timeout:
+                st.error("Request timed out. Render server may be starting (free tier delay). Try again in 15-30 seconds.")
             except Exception as e:
-                st.error(f"❌ Failed to connect to WHO API backend: {e}")
+                st.error(f"❌ Failed to connect to Render backend: {e}")
 
 else:
     st.info("Type a diagnosis in the search box above 👆")
