@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import base64
 import pandas as pd
 from datetime import datetime
+from db_helper import DatabaseHelper # Import the helper class
 
 # -------------------
 # Load secrets
@@ -32,7 +33,6 @@ def ingest_namaste_csv(path="Merged_CSV_3.csv"):
     try:
         if not os.path.exists(path):
             print(f"🔴 FATAL: The CSV file was not found at path: {path}")
-            print("🔴 Make sure the file is in the same directory and pushed to your Git repository.")
             return
 
         df = pd.read_csv(path)
@@ -47,7 +47,7 @@ def ingest_namaste_csv(path="Merged_CSV_3.csv"):
                 }
         
         if not NAMASTE_CODES:
-             print("🟡 WARNING: CSV loaded, but no codes were ingested. Check the CSV file's content.")
+             print("🟡 WARNING: CSV loaded, but no codes were ingested.")
         else:
             print(f"✅ [INFO] Loaded {len(NAMASTE_CODES)} NAMASTE codes successfully.")
 
@@ -73,32 +73,18 @@ def get_who_token():
         return None
 
 def who_api_search(query, chapter_filter=None):
-    """A generic helper to search the WHO API, with an optional chapter filter."""
     token = get_who_token()
-    if not token:
-        return []
-
+    if not token: return []
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
     params = {"q": query}
     if chapter_filter:
         params["chapterFilter"] = chapter_filter
-    
     try:
         r = requests.get(f"{API_URL}/2024-01/mms/search", headers=headers, params=params, timeout=15)
         if r.status_code == 200:
-            results = []
-            for ent in r.json().get("destinationEntities", []):
-                results.append({
-                    "code": ent.get("theCode", "N/A"),
-                    "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""),
-                    "definition": ent.get("definition", {}).get("@value", "No definition available.")
-                })
-            return results
-        else:
-            print(f"🟡 WARNING: WHO API returned status {r.status_code} for query '{query}'")
-            return []
-    except requests.exceptions.RequestException as e:
-        print(f"🔴 ERROR: Could not connect to WHO Search API. Reason: {e}")
+            return r.json().get("destinationEntities", [])
+        return []
+    except requests.exceptions.RequestException:
         return []
 
 # -------------------
@@ -110,20 +96,18 @@ def home():
 
 @app.route("/search")
 def search_biomedicine():
-    """Search for BIOMEDICINE terms (Chapters 01-25, 27)"""
     q = request.args.get("q", "")
     if not q: return jsonify({"results": []})
-    # Exclude TM2 chapter
-    results = who_api_search(q, chapter_filter="!26")
+    entities = who_api_search(q, chapter_filter="!26")
+    results = [{"code": ent.get("theCode", ""), "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", "")} for ent in entities]
     return jsonify({"results": results})
 
 @app.route("/search/tm2")
 def search_tm2():
-    """Search for TRADITIONAL MEDICINE terms (Chapter 26)"""
     q = request.args.get("q", "")
     if not q: return jsonify({"results": []})
-    # ONLY search TM2 chapter
-    results = who_api_search(q, chapter_filter="26")
+    entities = who_api_search(q, chapter_filter="26")
+    results = [{"code": ent.get("theCode", ""), "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", "")} for ent in entities]
     return jsonify({"results": results})
 
 @app.route("/autocomplete")
@@ -134,56 +118,20 @@ def autocomplete():
     results = []
     # 1. Search NAMASTE
     for code, data in NAMASTE_CODES.items():
-        if (q in data["display"].lower() or q in data["regional_term"].lower() or q in data["definition"].lower()):
+        if any(q in str(val).lower() for val in data.values()):
             results.append({"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": code, "display": data["display"], "source": "NAMASTE"})
     
-    # 2. Search Biomedicine
-    for item in who_api_search(q, chapter_filter="!26")[:5]: # Limit results
-        results.append({"system": "http://id.who.int/icd/release/11/mms", "code": item["code"], "display": item["term"], "source": "ICD-11"})
-        
-    # 3. Search TM2
-    for item in who_api_search(q, chapter_filter="26")[:5]: # Limit results
-        results.append({"system": "http://id.who.int/icd/release/11/mms/tm", "code": item["code"], "display": item["term"], "source": "ICD-11 (TM2)"})
+    # 2. Search Biomedicine & TM2
+    entities = who_api_search(q)
+    for ent in entities[:10]: # Limit combined WHO results
+        source = "ICD-11 (TM2)" if ent.get('chapter') == '26' else "ICD-11"
+        results.append({"system": "http://id.who.int/icd/release/11/mms", "code": ent.get("theCode"), "display": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""), "source": source})
 
     return jsonify({"total": len(results), "results": results})
 
 # -------------------
 # FHIR-Specific Routes
 # -------------------
-@app.route("/fhir/CodeSystem/namaste")
-def get_codesystem():
-    concepts = [{"code": data["code"], "display": data["display"]} for data in NAMASTE_CODES.values()]
-    return jsonify({"resourceType": "CodeSystem", "status": "active", "content": "complete", "concept": concepts})
-
-@app.route("/fhir/ConceptMap/$translate", methods=["POST"])
-def translate():
-    payload = request.get_json()
-    code_to_translate = payload.get("code")
-    nam_term = NAMASTE_CODES.get(code_to_translate, {}).get("display")
-
-    if not nam_term:
-        return jsonify({"error": "Code not found in NAMASTE"}), 404
-    
-    # Search for the term in both Biomedicine and TM2, return the first match
-    search_results = who_api_search(nam_term)
-    if not search_results:
-        return jsonify({"resourceType": "Parameters", "parameter": [{"name": "result", "valueBoolean": False}]})
-
-    best_match = search_results[0]
-    mapped_coding = {
-        "system": "http://id.who.int/icd/release/11/mms",
-        "code": best_match["code"],
-        "display": best_match["term"]
-    }
-    
-    return jsonify({
-        "resourceType": "Parameters",
-        "parameter": [
-            {"name": "result", "valueBoolean": True},
-            {"name": "match", "part": [{"name": "concept", "valueCoding": mapped_coding}]}
-        ]
-    })
-
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
     bundle = request.get_json()
@@ -198,27 +146,32 @@ def receive_bundle():
             nam_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
             
             if nam_code_obj:
-                # --- THIS IS THE CORRECTED SECTION ---
-                # Use the Flask test client to make a proper internal POST request to the $translate endpoint
-                translate_response = app.test_client().post(
-                    "/fhir/ConceptMap/$translate",
-                    json={"code": nam_code_obj['code']}
-                )
-                
-                if translate_response.status_code == 200:
-                    translate_data = translate_response.get_json()
-                    if translate_data.get("parameter") and translate_data["parameter"][0].get("valueBoolean"):
-                        icd_coding = translate_data["parameter"][1]["part"][0]["valueCoding"]
+                nam_term = NAMASTE_CODES.get(nam_code_obj['code'], {}).get('display')
+                if nam_term:
+                    # Translate by searching WHO API
+                    who_results = who_api_search(nam_term)
+                    if who_results:
+                        best_match = who_results[0]
+                        icd_coding = {
+                            "system": "http://id.who.int/icd/release/11/mms",
+                            "code": best_match.get("theCode"),
+                            "display": best_match.get("title", "").replace("<em class='found'>", "").replace("</em>", "")
+                        }
                         codings.append(icd_coding)
             
             processed_conditions.append(resource)
 
-    return jsonify({"status": "accepted", "stored": processed_conditions}), 201
+    final_payload = {"status": "accepted", "stored": processed_conditions}
+    
+    # Save the processed bundle to the database
+    db.save_bundle(final_payload)
+    
+    return jsonify(final_payload), 201
 
 # -------------------
 # Run
 # -------------------
 if __name__ == "__main__":
     ingest_namaste_csv()
+    db = DatabaseHelper() # Initialize the database helper
     app.run(debug=True, port=5000)
-

@@ -4,3 +4,4 @@ python-dotenv
 gunicorn
 pandas
 fhir.resources   # optional but recommended for FHIR validation
+psycopg2-binary
