@@ -198,14 +198,18 @@ def receive_bundle():
             nam_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
             
             if nam_code_obj:
-                # Use internal translate function
-                with app.test_request_context():
-                    translate_response = translate(nam_code_obj['code'])
-                    if translate_response.status_code == 200:
-                        translate_data = translate_response.get_json()
-                        if translate_data["parameter"][0].get("valueBoolean"):
-                            icd_coding = translate_data["parameter"][1]["part"][0]["valueCoding"]
-                            codings.append(icd_coding)
+                # --- THIS IS THE CORRECTED SECTION ---
+                # Use the Flask test client to make a proper internal POST request to the $translate endpoint
+                translate_response = app.test_client().post(
+                    "/fhir/ConceptMap/$translate",
+                    json={"code": nam_code_obj['code']}
+                )
+                
+                if translate_response.status_code == 200:
+                    translate_data = translate_response.get_json()
+                    if translate_data.get("parameter") and translate_data["parameter"][0].get("valueBoolean"):
+                        icd_coding = translate_data["parameter"][1]["part"][0]["valueCoding"]
+                        codings.append(icd_coding)
             
             processed_conditions.append(resource)
 
