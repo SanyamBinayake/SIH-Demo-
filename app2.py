@@ -22,6 +22,9 @@ app = Flask(__name__)
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
 API_URL = "https://id.who.int/icd/release/11"
 
+# --- NEW: URI for the Traditional Medicine Module 2 (TM2) Chapter ---
+TM2_CHAPTER_URI = "http://id.who.int/icd/release/11/mms/26"
+
 # -------------------
 # NAMASTE CSV ingestion
 # -------------------
@@ -78,28 +81,52 @@ def get_who_token():
 def home():
     return "WHO ICD + NAMASTE Demo Server 🚀"
 
-@app.route("/search")
-def search_icd():
-    q = request.args.get("q", "epilepsy")
+def _perform_who_search(query, subtree_filter=None):
+    """Helper function to perform a search against the WHO ICD API."""
     token = get_who_token()
     if not token:
-        return jsonify({"error": "Failed to get token"}), 500
+        return None, "Failed to get token"
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
-    search_url = f"{API_URL}/2024-01/mms/search?q={q}"
+    params = {'q': query}
+    if subtree_filter:
+        params['subtreesFilter'] = subtree_filter
+    
     try:
-        r2 = requests.get(search_url, headers=headers, timeout=15)
-        if r2.status_code != 200:
-            return jsonify({"error": "WHO ICD search failed"}), 400
+        r = requests.get(f"{API_URL}/2024-01/mms/search", params=params, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None, r.text
         
-        data = r2.json()
-        entities = data.get("destinationEntities", [])
+        entities = r.json().get("destinationEntities", [])
         results = []
         for ent in entities:
-            results.append({"code": ent.get("theCode", ""), "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", "")})
-        return jsonify({"results": results})
+            results.append({
+                "code": ent.get("theCode", ""), 
+                "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""),
+                "definition": ent.get("definition", {}).get("value", "No definition available.")
+            })
+        return results, None
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Could not connect to WHO API: {e}"}), 503
+        return None, str(e)
+
+@app.route("/search")
+def search_icd():
+    """Search the entire WHO ICD-11 (Biomedicine)."""
+    q = request.args.get("q")
+    results, error = _perform_who_search(q)
+    if error:
+        return jsonify({"error": "WHO ICD search failed", "details": error}), 500
+    return jsonify({"results": results})
+
+# --- NEW: Endpoint specifically for TM2 search ---
+@app.route("/search/tm2")
+def search_icd_tm2():
+    """Search only within the WHO ICD-11 TM2 Chapter."""
+    q = request.args.get("q")
+    results, error = _perform_who_search(q, subtree_filter=TM2_CHAPTER_URI)
+    if error:
+        return jsonify({"error": "WHO ICD-11 TM2 search failed", "details": error}), 500
+    return jsonify({"results": results})
 
 @app.route("/autocomplete")
 def autocomplete():
@@ -107,10 +134,12 @@ def autocomplete():
     results = []
     if not q: return {"total": 0, "results": []}
 
+    # 1. Search NAMASTE
     for code, data in NAMASTE_CODES.items():
         if (q in data["display"].lower() or q in data["regional_term"].lower() or q in data["definition"].lower()):
             results.append({"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": code, "display": data["display"], "source": "NAMASTE"})
 
+    # 2. Search WHO ICD-11 (Biomedicine + TM2)
     token = get_who_token()
     if token:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2"}
@@ -118,64 +147,51 @@ def autocomplete():
             r = requests.get(f"{API_URL}/2024-01/mms/search?q={q}", headers=headers, timeout=15)
             if r.status_code == 200:
                 for ent in r.json().get("destinationEntities", []):
-                    results.append({"system": "http://id.who.int/icd/release/11/mms", "code": ent.get("theCode"), "display": ent.get("title", {}).get("@value", ent.get("title", "")).replace("<em class='found'>", "").replace("</em>", ""), "source": "ICD-11"})
+                    # --- UPDATED: Determine if result is TM2 or Biomedicine ---
+                    is_tm2 = TM2_CHAPTER_URI in ent.get('foundationReference', '')
+                    source = "ICD-11 TM2" if is_tm2 else "ICD-11"
+                    results.append({
+                        "system": "http://id.who.int/icd/release/11/mms", 
+                        "code": ent.get("theCode"), 
+                        "display": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""), 
+                        "source": source
+                    })
         except requests.exceptions.RequestException:
-            pass # Silently fail if WHO is unreachable
+            pass
     
     return {"total": len(results), "results": results[:20]}
 
-# --- RESTORED FHIR ROUTES ---
+# --- FHIR Routes (Unchanged) ---
 @app.route("/fhir/CodeSystem/namaste")
 def get_codesystem():
-    """Expose NAMASTE CodeSystem"""
     concepts = [{"code": data["code"], "display": data["display"]} for data in NAMASTE_CODES.values()]
-    return jsonify({
-        "resourceType": "CodeSystem", "id": "namaste", "url": "https://demo.sih/fhir/CodeSystem/namaste",
-        "status": "active", "content": "complete", "concept": concepts
-    })
+    return jsonify({"resourceType": "CodeSystem", "id": "namaste", "url": "https://demo.sih/fhir/CodeSystem/namaste", "status": "active", "content": "complete", "concept": concepts})
 
 @app.route("/fhir/ConceptMap/$translate", methods=["POST"])
 def translate():
-    """Translate NAMASTE code to ICD-11"""
     payload = request.get_json()
     code = payload.get("code")
     nam_term = NAMASTE_CODES.get(code, {}).get("display")
-
-    if not nam_term:
-        return jsonify({"error": "Code not found"}), 404
-
-    token = get_who_token()
-    mapped = []
-    if token:
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2"}
-        r = requests.get(f"{API_URL}/2024-01/mms/search?q={nam_term}", headers=headers)
-        if r.status_code == 200:
-            for res in r.json().get("destinationEntities", [])[:1]:
-                mapped.append({
-                    "system": "http://id.who.int/icd/release/11/mms",
-                    "code": res.get("theCode"),
-                    "display": res.get("title", {}).get("@value", res.get("title", ""))
-                })
+    if not nam_term: return jsonify({"error": "Code not found"}), 404
     
-    return jsonify({
-        "resourceType": "Parameters",
-        "parameter": [{"name": "result", "valueBoolean": True}, {"name": "match", "part": [{"name": "concept", "valueCoding": mapped[0]}]}] if mapped else [{"name": "result", "valueBoolean": False}]
-    })
+    results, _ = _perform_who_search(nam_term) # Use helper
+    mapped = []
+    if results:
+        mapped.append({"system": "http://id.who.int/icd/release/11/mms", "code": results[0]['code'], "display": results[0]['term']})
+
+    return jsonify({"resourceType": "Parameters", "parameter": [{"name": "result", "valueBoolean": True}, {"name": "match", "part": [{"name": "concept", "valueCoding": mapped[0]}]}] if mapped else [{"name": "result", "valueBoolean": False}]})
 
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
-    """Receive FHIR Bundle with dual coding"""
     bundle = request.get_json()
-    if not bundle or bundle.get("resourceType") != "Bundle":
-        return jsonify({"error": "Invalid Bundle"}), 400
-
+    if not bundle or bundle.get("resourceType") != "Bundle": return jsonify({"error": "Invalid Bundle"}), 400
+    
     stored_conditions = []
     for entry in bundle.get("entry", []):
         res = entry.get("resource", {})
         if res.get("resourceType") == "Condition":
             codings = res.get("code", {}).get("coding", [])
             has_nam = any("namaste" in c.get("system", "") for c in codings)
-            
             if has_nam:
                 nam_code = next((c["code"] for c in codings if "namaste" in c["system"]), None)
                 if nam_code:
@@ -185,9 +201,7 @@ def receive_bundle():
                         if trans_data["parameter"][0].get("valueBoolean"):
                             icd_coding = trans_data["parameter"][1]["part"][0]["valueCoding"]
                             codings.append(icd_coding)
-            
             stored_conditions.append(res)
-
     return jsonify({"status": "accepted", "stored": stored_conditions}), 201
 
 # -------------------
