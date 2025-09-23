@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import base64
 import pandas as pd
 from datetime import datetime
-from db_helper import DatabaseHelper # Import the helper class
+import json
+from db_helper import DatabaseHelper # Make sure you have this import
 
 # -------------------
 # Load secrets
@@ -22,6 +23,12 @@ app = Flask(__name__)
 
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
 API_URL = "https://id.who.int/icd/release/11"
+
+# -------------------
+# Initialize Database Helper
+# -------------------
+# This is the key change: Initialize db in the global scope
+db = DatabaseHelper()
 
 # -------------------
 # NAMASTE CSV ingestion
@@ -94,6 +101,7 @@ def who_api_search(query, chapter_filter=None):
 def home():
     return "WHO ICD + NAMASTE Demo Server 🚀"
 
+# ... (other routes like /search, /search/tm2, /autocomplete remain the same)
 @app.route("/search")
 def search_biomedicine():
     q = request.args.get("q", "")
@@ -114,20 +122,16 @@ def search_tm2():
 def autocomplete():
     q = request.args.get("q", "").lower()
     if not q: return jsonify({"total": 0, "results": []})
-    
     results = []
-    # 1. Search NAMASTE
     for code, data in NAMASTE_CODES.items():
         if any(q in str(val).lower() for val in data.values()):
             results.append({"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": code, "display": data["display"], "source": "NAMASTE"})
-    
-    # 2. Search Biomedicine & TM2
     entities = who_api_search(q)
-    for ent in entities[:10]: # Limit combined WHO results
+    for ent in entities[:10]:
         source = "ICD-11 (TM2)" if ent.get('chapter') == '26' else "ICD-11"
         results.append({"system": "http://id.who.int/icd/release/11/mms", "code": ent.get("theCode"), "display": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""), "source": source})
-
     return jsonify({"total": len(results), "results": results})
+
 
 # -------------------
 # FHIR-Specific Routes
@@ -148,7 +152,6 @@ def receive_bundle():
             if nam_code_obj:
                 nam_term = NAMASTE_CODES.get(nam_code_obj['code'], {}).get('display')
                 if nam_term:
-                    # Translate by searching WHO API
                     who_results = who_api_search(nam_term)
                     if who_results:
                         best_match = who_results[0]
@@ -163,7 +166,7 @@ def receive_bundle():
 
     final_payload = {"status": "accepted", "stored": processed_conditions}
     
-    # Save the processed bundle to the database
+    # Now 'db' is defined in the global scope and can be accessed here
     db.save_bundle(final_payload)
     
     return jsonify(final_payload), 201
@@ -173,5 +176,6 @@ def receive_bundle():
 # -------------------
 if __name__ == "__main__":
     ingest_namaste_csv()
-    db = DatabaseHelper() # Initialize the database helper
+    # The 'db' object is already created above, so we just run the app
     app.run(debug=True, port=5000)
+

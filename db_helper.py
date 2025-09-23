@@ -3,14 +3,18 @@ import psycopg2
 import json
 
 class DatabaseHelper:
+    """
+    A helper class to manage all interactions with the PostgreSQL database.
+    """
     def __init__(self):
         """
         Initializes the database helper, getting the connection URL
-        from environment variables.
+        from environment variables and ensuring the database table exists.
         """
         self.db_url = os.getenv("DATABASE_URL")
         if not self.db_url:
             print("🔴 FATAL: DATABASE_URL environment variable not found!")
+        # Automatically initialize the database table on startup
         self.init_db()
 
     def get_connection(self):
@@ -32,6 +36,7 @@ class DatabaseHelper:
 
         try:
             with conn.cursor() as cur:
+                # Create the table for storing FHIR bundles
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS fhir_bundles (
                         id SERIAL PRIMARY KEY,
@@ -52,16 +57,18 @@ class DatabaseHelper:
         """
         Saves a processed FHIR bundle to the database.
         It extracts key information for dedicated columns and stores
-        the full bundle as a JSONB object.
+        the full bundle as a JSONB object for rich querying.
         """
         conn = self.get_connection()
         if conn is None:
             return False
 
         try:
-            # Extract key info from the first condition resource
+            # Extract key info from the first processed condition resource
             condition_resource = bundle_data['stored'][0]
             patient_id = condition_resource.get('subject', {}).get('reference', 'Unknown')
+            
+            # Find the original NAMASTE code for indexing
             namaste_code = next(
                 (c.get('code') for c in condition_resource.get('code', {}).get('coding', [])
                  if 'namaste' in c.get('system', '')),
@@ -79,6 +86,10 @@ class DatabaseHelper:
                 conn.commit()
                 print(f"✅ [INFO] Successfully saved bundle for patient {patient_id} to the database.")
                 return True
+        except (IndexError, KeyError) as e:
+            conn.rollback()
+            print(f"🔴 ERROR: Could not extract required data from bundle to save. Bundle structure might be unexpected. Details: {e}")
+            return False
         except Exception as e:
             conn.rollback()
             print(f"🔴 ERROR: Failed to save bundle to database: {e}")
