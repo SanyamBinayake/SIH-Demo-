@@ -1,4 +1,6 @@
 flask
 requests
 python-dotenv
-gunicorn  # Production server (Render recommends)
+gunicorn
+pandas
+fhir.resources   # optional but recommended for FHIR validation
