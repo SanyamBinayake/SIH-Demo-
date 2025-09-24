@@ -27,8 +27,19 @@ def load_data():
         st.error("FATAL: Merged_CSV_3.csv not found. Make sure it's in your GitHub repository.")
         return pd.DataFrame()
 
-def show_with_load_more(results, section_key, source="namaste"):
-    for row in results:
+def show_with_load_more(results, section_key, source="namaste", page_size=15):
+    """
+    Displays a list of results with a "Load More" button for pagination.
+    """
+    # Initialize the number of visible items in the session state if not already present
+    if section_key not in st.session_state:
+        st.session_state[section_key] = page_size
+
+    # Get the current number of visible items
+    visible_count = st.session_state[section_key]
+
+    # Display the visible items
+    for row in results[:visible_count]:
         if source.startswith("icd"): # ICD WHO results
             code = row.get("code", "N/A")
             term = row.get("term", "N/A")
@@ -41,6 +52,13 @@ def show_with_load_more(results, section_key, source="namaste"):
                 st.markdown(f"**Regional Term:** {row.get('RegionalTerm', 'N/A')}")
                 st.markdown(f"**Short Definition:** {row.get('Short_definition', 'N/A')}")
                 st.markdown(f"**Long Definition:** {row.get('Long_definition', 'N/A')}")
+
+    # Show the "Load More" button if there are more items to display
+    if len(results) > visible_count:
+        st.write(f"Showing {visible_count} of {len(results)} results.")
+        if st.button("Load More", key=f"load_more_{section_key}"):
+            st.session_state[section_key] += page_size
+            st.rerun()
 
 def handle_api_request(endpoint, query):
     try:
@@ -60,6 +78,13 @@ st.title("🌿 Unified NAMASTE + WHO ICD Search")
 df = load_data()
 query = st.text_input("🔍 Search for a diagnosis (term, code, or definition)", help="Try 'Jwara', 'Fever', or 'Vertigo'")
 
+# Reset pagination if the search query changes
+if 'current_query' not in st.session_state or st.session_state.current_query != query:
+    st.session_state.current_query = query
+    for key in ["namaste", "icd_bio", "icd_tm2"]: # Reset keys for all tabs
+        if key in st.session_state:
+            del st.session_state[key]
+
 if query:
     query_lower = query.lower()
     
@@ -73,20 +98,23 @@ if query:
             if not df.empty:
                 mask = df.apply(lambda row: any(query_lower in str(cell).lower() for cell in row), axis=1)
                 namaste_results = df[mask].to_dict("records")
-            st.write(f"Found {len(namaste_results)} matches.")
-            if namaste_results: show_with_load_more(namaste_results, "namaste", "namaste")
+            st.write(f"Found {len(namaste_results)} total matches.")
+            if namaste_results: 
+                show_with_load_more(namaste_results, section_key="namaste", source="namaste")
 
     with tab2:
         with st.spinner("Fetching Biomedicine results..."):
             results = handle_api_request("/search", query)
-            st.write(f"Found {len(results)} matches.")
-            if results: show_with_load_more(results, "icd_bio", "icd-biomedicine")
+            st.write(f"Found {len(results)} total matches.")
+            if results: 
+                show_with_load_more(results, section_key="icd_bio", source="icd-biomedicine")
 
     with tab3:
         with st.spinner("Fetching TM2 results..."):
             results = handle_api_request("/search/tm2", query)
-            st.write(f"Found {len(results)} matches.")
-            if results: show_with_load_more(results, "icd_tm2", "icd-tm2")
+            st.write(f"Found {len(results)} total matches.")
+            if results: 
+                show_with_load_more(results, section_key="icd_tm2", source="icd-tm2")
 
     with tab4:
         with st.spinner("Fetching combined results..."):
@@ -95,17 +123,14 @@ if query:
                 response.raise_for_status()
                 all_results = response.json().get("results", [])
                 
-                # --- NEW: Description and Filter Dropdown ---
                 st.info("This tab shows a combined list of results from all available sources. Use the filter to narrow your view.")
                 
                 filter_option = st.selectbox(
                     "Filter results by source:",
                     ("All", "NAMASTE", "ICD-11", "ICD-11 (TM2)")
                 )
-                # --- END OF NEW SECTION ---
 
                 if all_results:
-                    # Filter the data based on the dropdown selection
                     filtered_data = []
                     if filter_option == "All":
                         filtered_data = all_results
@@ -133,7 +158,6 @@ else:
 # --------------------
 # Bundle Save Section
 # --------------------
-# (This section remains unchanged)
 st.markdown("---")
 st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
 namaste_code = st.text_input("Enter NAMASTE code (e.g., NAM0001)")
