@@ -111,11 +111,14 @@ if 'current_query' not in st.session_state or st.session_state.current_query != 
         if key in st.session_state:
             del st.session_state[key]
 
-if query:
+if not query:
+    st.info("Type a diagnosis in the search box to begin.")
+else:
     query_lower = query.lower()
     
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📘 NAMASTE", "🌍 WHO ICD-11 (Biomedicine)", "🌏 WHO ICD-11 (TM2)", "⚡ Combined Autocomplete"
+    # --- UPDATED: Added a 5th tab for saving the bundle ---
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📘 NAMASTE", "🌍 WHO ICD-11 (Biomedicine)", "🌏 WHO ICD-11 (TM2)", "⚡ Combined Autocomplete", "🧾 Save Bundle"
     ])
 
     with tab1:
@@ -169,30 +172,26 @@ if query:
                     st.info("No results found for this query.")
             except requests.exceptions.RequestException as e:
                 st.error(f"Failed to connect to autocomplete API: {e}")
-else:
-    st.info("Type a diagnosis in the search box to begin.")
 
-# --------------------
-# Bundle Save Section
-# --------------------
-st.markdown("---")
-st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
-namaste_code = st.text_input("Enter NAMASTE code (e.g., NAM0001)")
-patient_id = st.text_input("Enter Patient ID", "Patient/001")
-if st.button("Save Condition Bundle"):
-    if not namaste_code:
-        st.warning("Please enter a NAMASTE code.")
-    else:
-        with st.spinner("Saving bundle..."):
-            bundle = {"resourceType": "Bundle", "type": "collection", "entry": [{"resource": {"resourceType": "Condition", "code": {"coding": [{"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": namaste_code, "display": "NAMASTE term"}]}, "subject": {"reference": patient_id}}}]}
-            try:
-                resp = requests.post(f"{BACKEND_URL}/fhir/Bundle", json=bundle, timeout=30)
-                if resp.status_code == 201:
-                    st.success("✅ Condition stored with dual coding!")
-                    st.json(resp.json())
-                else:
-                    st.error(f"❌ Failed to save bundle. Server responded with status {resp.status_code}:")
-                    st.json(resp.json())
-            except requests.exceptions.RequestException as e:
-                st.error(f"❌ Error connecting to the backend: {e}")
+    # --- NEW: Bundle Save Section is now in its own tab ---
+    with tab5:
+        st.subheader("🧾Save Condition to FHIR Bundle")
+        namaste_code = st.text_input("Enter NAMASTE code (e.g., NAM0001)")
+        patient_id = st.text_input("Enter Patient ID", "Patient/001")
+        if st.button("Save Condition Bundle"):
+            if not namaste_code:
+                st.warning("Please enter a NAMASTE code.")
+            else:
+                with st.spinner("Saving bundle..."):
+                    bundle = {"resourceType": "Bundle", "type": "collection", "entry": [{"resource": {"resourceType": "Condition", "code": {"coding": [{"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": namaste_code, "display": "NAMASTE term"}]}, "subject": {"reference": patient_id}}}]}
+                    try:
+                        resp = requests.post(f"{BACKEND_URL}/fhir/Bundle", json=bundle, timeout=30)
+                        if resp.status_code == 201:
+                            st.success("✅ Condition stored with dual coding!")
+                            st.json(resp.json())
+                        else:
+                            st.error(f"❌ Failed to save bundle. Server responded with status {resp.status_code}:")
+                            st.json(resp.json())
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"❌ Error connecting to the backend: {e}")
 
