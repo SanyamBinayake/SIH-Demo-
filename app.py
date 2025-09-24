@@ -36,18 +36,18 @@ def show_with_load_more(results, section_key, page_size=5, source="namaste"):
         if source.startswith("icd"): # ICD WHO results
             code = row.get("code", "N/A")
             term = row.get("term", "N/A")
+            # --- THIS SECTION IS NOW UPDATED ---
+            definition = row.get("definition", "No definition available.")
             with st.expander(f"`{code}` - {term}"):
                 st.markdown(f"**Source:** {source.upper()}")
+                st.markdown(f"**Definition:** {definition}")
+            # --- END OF UPDATE ---
 
         else: # NAMASTE rows
             with st.expander(f"{row.get('Code', 'N/A')} - {row.get('Term', 'N/A')}"):
                 st.markdown(f"**Regional Term:** {row.get('RegionalTerm', 'N/A')}")
-                # --- THIS IS THE ADDED SECTION ---
                 st.markdown(f"**Short Definition:** {row.get('Short_definition', 'N/A')}")
                 st.markdown(f"**Long Definition:** {row.get('Long_definition', 'N/A')}")
-                # --- END OF ADDED SECTION ---
-
-# ... (The rest of the file remains the same)
 
 def handle_api_request(endpoint, query):
     try:
@@ -83,7 +83,6 @@ if query:
         with st.spinner("Searching NAMASTE data..."):
             namaste_results = []
             if not df.empty:
-                # More robust search across multiple columns
                 mask = df.apply(lambda row: any(query_lower in str(cell).lower() for cell in row), axis=1)
                 namaste_results = df[mask].to_dict("records")
             
