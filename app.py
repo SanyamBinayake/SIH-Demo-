@@ -7,6 +7,39 @@ import requests
 BACKEND_URL = "https://sih-demo-4z5c.onrender.com"
 
 # --------------------
+# UI Customization Section
+# --------------------
+# 1. Inject custom CSS with st.markdown to change font sizes
+st.markdown("""
+<style>
+/* Target the title header */
+h1#unified-namaste-who-icd-search {
+    font-size: 26px; /* Make the title font smaller */
+    font-weight: 600;
+    line-height: 1.2;
+}
+/* Target the input box label */
+div[data-testid="stTextInput"] label {
+    font-size: 18px !important; /* Make the input label larger */
+    font-weight: 500;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# 2. Create a custom header with your logo and the new title
+# --- This now contains the correct, permanent "raw" URL for your logo ---
+LOGO_URL = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/3c131c7e8b87c00be561ae349a84bf7654acd7ad/mediunify_logo_1_-removebg-preview.png"
+
+st.markdown(f"""
+<div style="display: flex; align-items: center; margin-bottom: 20px;">
+    <img src="{LOGO_URL}" alt="Logo" style="height: 50px; margin-right: 15px;">
+    <h1 id="unified-namaste-who-icd-search">Unified NAMASTE + WHO ICD Search</h1>
+</div>
+""", unsafe_allow_html=True)
+
+# The original st.title() is now removed and replaced by the custom header above.
+
+# --------------------
 # Helper Functions
 # --------------------
 @st.cache_data
@@ -31,14 +64,11 @@ def show_with_load_more(results, section_key, source="namaste", page_size=15):
     """
     Displays a list of results with a "Load More" button for pagination.
     """
-    # Initialize the number of visible items in the session state if not already present
     if section_key not in st.session_state:
         st.session_state[section_key] = page_size
 
-    # Get the current number of visible items
     visible_count = st.session_state[section_key]
 
-    # Display the visible items
     for row in results[:visible_count]:
         if source.startswith("icd"): # ICD WHO results
             code = row.get("code", "N/A")
@@ -53,7 +83,6 @@ def show_with_load_more(results, section_key, source="namaste", page_size=15):
                 st.markdown(f"**Short Definition:** {row.get('Short_definition', 'N/A')}")
                 st.markdown(f"**Long Definition:** {row.get('Long_definition', 'N/A')}")
 
-    # Show the "Load More" button if there are more items to display
     if len(results) > visible_count:
         st.write(f"Showing {visible_count} of {len(results)} results.")
         if st.button("Load More", key=f"load_more_{section_key}"):
@@ -68,20 +97,17 @@ def handle_api_request(endpoint, query):
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to connect to the backend API. Error: {e}")
         return []
-    return []
 
 # --------------------
-# Streamlit UI
+# Main Application Logic
 # --------------------
-st.title("🌿 Unified NAMASTE + WHO ICD Search")
-
 df = load_data()
-query = st.text_input("🔍 Search for a diagnosis (term, code, or definition)", help="Try 'Jwara', 'Fever', or 'Vertigo'")
+query = st.text_input("Search for a diagnosis (term, code, or definition)", help="Try 'Jwara', 'Fever', or 'Vertigo'")
 
 # Reset pagination if the search query changes
 if 'current_query' not in st.session_state or st.session_state.current_query != query:
     st.session_state.current_query = query
-    for key in ["namaste", "icd_bio", "icd_tm2"]: # Reset keys for all tabs
+    for key in ["namaste", "icd_bio", "icd_tm2"]:
         if key in st.session_state:
             del st.session_state[key]
 
@@ -122,14 +148,8 @@ if query:
                 response = requests.get(f"{BACKEND_URL}/autocomplete", params={"q": query}, timeout=20)
                 response.raise_for_status()
                 all_results = response.json().get("results", [])
-                
                 st.info("This tab shows a combined list of results from all available sources. Use the filter to narrow your view.")
-                
-                filter_option = st.selectbox(
-                    "Filter results by source:",
-                    ("All", "NAMASTE", "ICD-11", "ICD-11 (TM2)")
-                )
-
+                filter_option = st.selectbox("Filter results by source:", ("All", "NAMASTE", "ICD-11", "ICD-11 (TM2)"))
                 if all_results:
                     filtered_data = []
                     if filter_option == "All":
@@ -138,9 +158,7 @@ if query:
                         for row in all_results:
                             if row.get('source') == filter_option:
                                 filtered_data.append(row)
-
                     st.write(f"Displaying {len(filtered_data)} of {len(all_results)} total matches.")
-                    
                     if not filtered_data:
                         st.warning(f"No results found for the source '{filter_option}' in this search.")
                     else:
@@ -151,7 +169,6 @@ if query:
                     st.info("No results found for this query.")
             except requests.exceptions.RequestException as e:
                 st.error(f"Failed to connect to autocomplete API: {e}")
-
 else:
     st.info("Type a diagnosis in the search box to begin.")
 
