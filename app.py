@@ -27,22 +27,15 @@ def load_data():
         st.error("FATAL: Merged_CSV_3.csv not found. Make sure it's in your GitHub repository.")
         return pd.DataFrame()
 
-def show_with_load_more(results, section_key, page_size=5, source="namaste"):
-    if section_key not in st.session_state:
-        st.session_state[section_key] = page_size
-    visible_count = st.session_state.get(section_key, page_size)
-
-    for row in results[:visible_count]:
+def show_with_load_more(results, section_key, source="namaste"):
+    for row in results:
         if source.startswith("icd"): # ICD WHO results
             code = row.get("code", "N/A")
             term = row.get("term", "N/A")
-            # --- THIS SECTION IS NOW UPDATED ---
             definition = row.get("definition", "No definition available.")
             with st.expander(f"`{code}` - {term}"):
                 st.markdown(f"**Source:** {source.upper()}")
                 st.markdown(f"**Definition:** {definition}")
-            # --- END OF UPDATE ---
-
         else: # NAMASTE rows
             with st.expander(f"{row.get('Code', 'N/A')} - {row.get('Term', 'N/A')}"):
                 st.markdown(f"**Regional Term:** {row.get('RegionalTerm', 'N/A')}")
@@ -55,11 +48,9 @@ def handle_api_request(endpoint, query):
         response.raise_for_status()
         return response.json().get("results", [])
     except requests.exceptions.RequestException as e:
-        st.error(f"Failed to connect to the backend API. Please ensure the server is running. Error: {e}")
+        st.error(f"Failed to connect to the backend API. Error: {e}")
         return []
-    except Exception as e:
-        st.error(f"An unexpected error occurred: {e}")
-        return []
+    return []
 
 # --------------------
 # Streamlit UI
@@ -67,16 +58,13 @@ def handle_api_request(endpoint, query):
 st.title("🌿 Unified NAMASTE + WHO ICD Search")
 
 df = load_data()
-query = st.text_input("🔍 Search for a diagnosis (term, code, or definition)", help="Try searching for 'Jwara', 'Fever', or 'Vertigo'")
+query = st.text_input("🔍 Search for a diagnosis (term, code, or definition)", help="Try 'Jwara', 'Fever', or 'Vertigo'")
 
 if query:
     query_lower = query.lower()
     
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📘 NAMASTE",
-        "🌍 WHO ICD-11 (Biomedicine)",
-        "🌏 WHO ICD-11 (TM2)",
-        "⚡ Combined Autocomplete"
+        "📘 NAMASTE", "🌍 WHO ICD-11 (Biomedicine)", "🌏 WHO ICD-11 (TM2)", "⚡ Combined Autocomplete"
     ])
 
     with tab1:
@@ -85,78 +73,77 @@ if query:
             if not df.empty:
                 mask = df.apply(lambda row: any(query_lower in str(cell).lower() for cell in row), axis=1)
                 namaste_results = df[mask].to_dict("records")
-            
             st.write(f"Found {len(namaste_results)} matches.")
-            if namaste_results:
-                show_with_load_more(namaste_results, section_key="namaste", source="namaste")
-            else:
-                st.info("No matches found in the local NAMASTE dataset.")
+            if namaste_results: show_with_load_more(namaste_results, "namaste", "namaste")
 
     with tab2:
         with st.spinner("Fetching Biomedicine results..."):
             results = handle_api_request("/search", query)
             st.write(f"Found {len(results)} matches.")
-            if results:
-                show_with_load_more(results, section_key="icd_bio", source="icd-biomedicine")
-            else:
-                st.info("No results returned from the WHO ICD-11 Biomedicine API.")
+            if results: show_with_load_more(results, "icd_bio", "icd-biomedicine")
 
     with tab3:
         with st.spinner("Fetching TM2 results..."):
             results = handle_api_request("/search/tm2", query)
             st.write(f"Found {len(results)} matches.")
-            if results:
-                show_with_load_more(results, section_key="icd_tm2", source="icd-tm2")
-            else:
-                st.info("No results returned from the WHO ICD-11 TM2 API.")
+            if results: show_with_load_more(results, "icd_tm2", "icd-tm2")
 
     with tab4:
         with st.spinner("Fetching combined results..."):
             try:
                 response = requests.get(f"{BACKEND_URL}/autocomplete", params={"q": query}, timeout=20)
                 response.raise_for_status()
-                data = response.json().get("results", [])
-                st.write(f"Found {len(data)} matches.")
-                if data:
-                    for row in data:
-                        with st.expander(f"**{row.get('source', 'N/A')}** | `{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
-                            st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
+                all_results = response.json().get("results", [])
+                
+                # --- NEW: Description and Filter Dropdown ---
+                st.info("This tab shows a combined list of results from all available sources. Use the filter to narrow your view.")
+                
+                filter_option = st.selectbox(
+                    "Filter results by source:",
+                    ("All", "NAMASTE", "ICD-11", "ICD-11 (TM2)")
+                )
+                # --- END OF NEW SECTION ---
+
+                if all_results:
+                    # Filter the data based on the dropdown selection
+                    filtered_data = []
+                    if filter_option == "All":
+                        filtered_data = all_results
+                    else:
+                        for row in all_results:
+                            if row.get('source') == filter_option:
+                                filtered_data.append(row)
+
+                    st.write(f"Displaying {len(filtered_data)} of {len(all_results)} total matches.")
+                    
+                    if not filtered_data:
+                        st.warning(f"No results found for the source '{filter_option}' in this search.")
+                    else:
+                        for row in filtered_data:
+                            with st.expander(f"**{row.get('source', 'N/A')}** | `{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
+                                st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
                 else:
-                    st.info("No results found.")
+                    st.info("No results found for this query.")
             except requests.exceptions.RequestException as e:
                 st.error(f"Failed to connect to autocomplete API: {e}")
 
 else:
-    st.info("Type a diagnosis in the search box above to begin.")
+    st.info("Type a diagnosis in the search box to begin.")
 
 # --------------------
 # Bundle Save Section
 # --------------------
+# (This section remains unchanged)
 st.markdown("---")
 st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
-
 namaste_code = st.text_input("Enter NAMASTE code (e.g., NAM0001)")
 patient_id = st.text_input("Enter Patient ID", "Patient/001")
-
 if st.button("Save Condition Bundle"):
     if not namaste_code:
         st.warning("Please enter a NAMASTE code.")
     else:
         with st.spinner("Saving bundle..."):
-            bundle = {
-                "resourceType": "Bundle", "type": "collection",
-                "entry": [{
-                    "resource": {
-                        "resourceType": "Condition",
-                        "code": { "coding": [{
-                            "system": "https://demo.sih/fhir/CodeSystem/namaste",
-                            "code": namaste_code,
-                            "display": "NAMASTE term (to be translated)"
-                        }]},
-                        "subject": {"reference": patient_id}
-                    }
-                }]
-            }
+            bundle = {"resourceType": "Bundle", "type": "collection", "entry": [{"resource": {"resourceType": "Condition", "code": {"coding": [{"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": namaste_code, "display": "NAMASTE term"}]}, "subject": {"reference": patient_id}}}]}
             try:
                 resp = requests.post(f"{BACKEND_URL}/fhir/Bundle", json=bundle, timeout=30)
                 if resp.status_code == 201:
