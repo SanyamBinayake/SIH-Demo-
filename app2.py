@@ -212,4 +212,3 @@ if __name__ == "__main__":
 else:
     # This runs when Gunicorn starts the app on Render
     load_namaste_data_from_github()
-
