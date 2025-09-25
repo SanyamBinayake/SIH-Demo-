@@ -169,23 +169,22 @@ with map_tab:
                     col1, col2 = st.columns(2)
                     with col1:
                         st.markdown(f"""<div class="mapper-card">
-                                <h3>Source: NAMASTE ({source.get('system')})</h3>
-                                <p><strong>Code:</strong> <code>{source.get('code')}</code></p>
-                                <p><strong>Term:</strong> {source.get('term')}</p>
-                                <p><strong>Definition:</strong> {source.get('definition')}</p>
-                            </div>""", unsafe_allow_html=True)
+                            <h3>Source: NAMASTE ({source.get('system')})</h3>
+                            <p><strong>Code:</strong> <code>{source.get('code')}</code></p>
+                            <p><strong>Term:</strong> {source.get('term')}</p>
+                            <p><strong>Definition:</strong> {source.get('definition')}</p>
+                        </div>""", unsafe_allow_html=True)
                     with col2:
                         st.markdown(f"""<div class="mapper-card">
-                                <h3>Best ICD-11 Match(es)</h3>
-                                {'<p>No suitable match found in ICD-11.</p>' if not matches else ''}
-                            </div>""", unsafe_allow_html=True)
+                            <h3>Best ICD-11 Match(es)</h3>
+                            {'<p>No suitable match found in ICD-11.</p>' if not matches else ''}
+                        </div>""", unsafe_allow_html=True)
                         if matches:
                             for match in matches:
                                 with st.container(border=True):
-                                     st.markdown(f"<strong>Code:</strong> <code>{match.get('code')}</code>", unsafe_allow_html=True)
-                                     st.markdown(f"<strong>Term:</strong> {match.get('term')}", unsafe_allow_html=True)
-                                     st.markdown(f"<strong>Definition:</strong> {match.get('definition')}", unsafe_allow_html=True)
-
+                                    st.markdown(f"<strong>Code:</strong> <code>{match.get('code')}</code>", unsafe_allow_html=True)
+                                    st.markdown(f"<strong>Term:</strong> {match.get('term')}", unsafe_allow_html=True)
+                                    st.markdown(f"<strong>Definition:</strong> {match.get('definition')}", unsafe_allow_html=True)
                 except requests.exceptions.RequestException as e:
                     st.error(f"Mapping failed. Could not connect to the backend: {e}")
 
