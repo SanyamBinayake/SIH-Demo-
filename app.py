@@ -49,16 +49,18 @@ st.markdown(f"""
 # --------------------
 @st.cache_data
 def load_all_data():
-    """Loads all terminology CSVs into a dictionary of DataFrames."""
+    """
+    Loads all terminology CSVs into a dictionary of DataFrames.
+    This function is cached for performance. It ONLY performs data loading.
+    """
     data = {"Ayurveda": None, "Unani": None, "Siddha": None}
     base_url = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/main/"
     
     for system in data.keys():
         try:
             data[system] = pd.read_csv(base_url + f"{system}_Codes_Terms.csv")
-            st.toast(f"{system} data loaded successfully.", icon="✅")
         except Exception:
-            st.error(f"Failed to load {system}_Codes_Terms.csv from GitHub.")
+            # If loading fails, assign an empty DataFrame. The error will be handled outside this function.
             data[system] = pd.DataFrame()
     return data
 
@@ -95,6 +97,11 @@ def handle_api_request(endpoint, query):
 # Main Application Logic
 # --------------------
 all_data = load_all_data()
+
+# --- NEW: Check for data loading errors AFTER the cached function runs ---
+for system, df in all_data.items():
+    if df.empty:
+        st.error(f"Failed to load {system}_Codes_Terms.csv from GitHub. Please check the file path and repository.")
 
 # Create main tabs
 search_tab, map_tab, bundle_tab = st.tabs(["⚕️ Terminology Search", " NAMASTE <-> ICD-11 Mapper", "🧾 Save Bundle"])

@@ -53,7 +53,6 @@ def load_namaste_data_from_github():
 # Helper Functions
 # -------------------
 def get_who_token():
-    # (This function remains unchanged)
     if not CLIENT_ID or not CLIENT_SECRET: return None
     credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
@@ -68,7 +67,6 @@ def get_who_token():
         return None
 
 def who_api_search(query, chapter_filter=None):
-    # (This function remains unchanged)
     token = get_who_token()
     if not token: return []
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
@@ -154,7 +152,6 @@ def map_namaste_to_icd():
 # -------------------
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
-    # (This function remains largely unchanged but could be enhanced to use the new mapper)
     bundle = request.get_json()
     if not bundle or bundle.get("resourceType") != "Bundle":
         return jsonify({"error": "Invalid Bundle"}), 400
