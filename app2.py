@@ -1,3 +1,4 @@
+import re
 from flask import Flask, jsonify, request
 import requests
 import os
@@ -22,7 +23,7 @@ app = Flask(__name__)
 db = DatabaseHelper()
 
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
-API_URL = "https://id.who.int/icd/release/11"
+API_URL = "https://id.who.int/icd/release/11/2024-01/mms" # Correct, versioned API URL
 
 # -------------------
 # DATA LOADING (from GitHub, now including Siddha)
@@ -66,6 +67,22 @@ def get_who_token():
         print(f"🔴 ERROR: Could not get WHO token. Reason: {e}")
         return None
 
+def _clean_search_query(text):
+    """
+    Intelligently cleans a NAMASTE definition to create a better search query for the WHO API.
+    Removes special characters, bracketed content, and non-English terms.
+    """
+    if not isinstance(text, str):
+        return ""
+    # Remove content in brackets (like [insensibility/meditatitve appearance])
+    text = re.sub(r'\[.*?\]', '', text)
+    # Remove non-alphanumeric characters except spaces and commas
+    text = re.sub(r'[^a-zA-Z0-9\s,]', '', text)
+    # Split by comma and take the last part, which is often the English definition
+    parts = text.split(',')
+    clean_text = parts[-1].strip()
+    return clean_text
+
 def who_api_search(query, chapter_filter=None):
     token = get_who_token()
     if not token: return []
@@ -75,8 +92,7 @@ def who_api_search(query, chapter_filter=None):
         params["useFlexisearch"] = "true"
         params["chapterFilter"] = chapter_filter
     try:
-        search_url = f"{API_URL}/2024-01/mms/search"
-        r = requests.get(search_url, headers=headers, params=params, timeout=15)
+        r = requests.get(f"{API_URL}/search", headers=headers, params=params, timeout=15)
         if r.status_code == 200:
             results = []
             for ent in r.json().get("destinationEntities", []):
@@ -111,44 +127,32 @@ def search_tm2():
     if not q: return jsonify({"results": []})
     return jsonify({"results": who_api_search(q, chapter_filter="26")})
 
-# --- NEW: Semantic Mapping Endpoint ---
 @app.route("/map-code", methods=['POST'])
 def map_namaste_to_icd():
-    """
-    Takes a NAMASTE code, finds its definition, and performs a semantic
-    search against ICD-11 to find the best conceptual match.
-    """
     payload = request.get_json()
     namaste_code = payload.get("code")
+    if not namaste_code: return jsonify({"error": "No NAMASTE code provided"}), 400
 
-    if not namaste_code:
-        return jsonify({"error": "No NAMASTE code provided"}), 400
-
-    # Find the NAMASTE entry across all loaded systems
     source_details = None
-    for system in ["Ayurveda", "Unani", "Siddha"]:
-        found = next((item for item in ALL_NAMASTE_DATA.get(system, []) if item['code'] == namaste_code), None)
+    for system, data in ALL_NAMASTE_DATA.items():
+        found = next((item for item in data if item['code'] == namaste_code), None)
         if found:
             source_details = found
-            source_details['system'] = system # Add which system it came from
+            source_details['system'] = system
             break
             
     if not source_details:
-        return jsonify({"error": f"Code '{namaste_code}' not found in any NAMASTE system."}), 404
+        return jsonify({"error": f"Code '{namaste_code}' not found."}), 404
 
-    # Use the full definition for a high-quality search query
-    search_query = source_details.get('definition', source_details.get('term', ''))
+    # Use the cleaned definition for a high-quality search
+    search_query = _clean_search_query(source_details.get('definition', source_details.get('term', '')))
     
-    # Search both Biomedicine and TM2 for the best possible matches
     icd_matches = who_api_search(search_query)
 
-    return jsonify({
-        "source_details": source_details,
-        "mapped_details": icd_matches[:5] # Return top 5 matches
-    })
+    return jsonify({"source_details": source_details, "mapped_details": icd_matches[:5]})
 
 # -------------------
-# FHIR-Specific Route (remains for dual-coding)
+# FHIR-Specific Route
 # -------------------
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
@@ -170,10 +174,7 @@ def receive_bundle():
                         map_data = map_response.get_json()
                         if map_data.get("mapped_details"):
                             best_match = map_data["mapped_details"][0]
-                            icd_coding = {
-                                "system": "http://id.who.int/icd/release/11/mms",
-                                "code": best_match['code'], "display": best_match['term']
-                            }
+                            icd_coding = {"system": "http://id.who.int/icd/release/11/mms", "code": best_match['code'], "display": best_match['term']}
                             codings.append(icd_coding)
             
             processed_conditions.append(resource)
