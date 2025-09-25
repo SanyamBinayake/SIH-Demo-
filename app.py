@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 
 # Set your backend URL here
 BACKEND_URL = "https://sih-demo-4z5c.onrender.com"
@@ -8,8 +9,9 @@ BACKEND_URL = "https://sih-demo-4z5c.onrender.com"
 # --------------------
 # UI Customization Section
 # --------------------
-st.set_page_config(layout="wide") # Use a wider layout for the mapper
+st.set_page_config(layout="wide")
 
+# --- UPDATED: Changed the background color to a light theme ---
 st.markdown("""
 <style>
 /* Target the title header */
@@ -22,15 +24,20 @@ div[data-testid="stTextInput"] label {
 }
 /* Custom styles for the mapper cards */
 .mapper-card {
-    background-color: #262730;
+    background-color: #F0F2F6; /* Light grey background */
+    color: #31333F; /* Darker text for readability */
     padding: 20px;
     border-radius: 10px;
-    border: 1px solid #3D3D3D;
+    border: 1px solid #D3D3D3; /* Light border */
     height: 100%;
 }
 .mapper-card h3 {
     margin-top: 0;
     color: #00A9E0;
+}
+.mapper-card code {
+    background-color: #E6E6E6; /* Slightly darker background for code */
+    color: #31333F;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -49,12 +56,8 @@ st.markdown(f"""
 # --------------------
 @st.cache_data
 def load_all_data():
-    """
-    Loads all terminology CSVs into a dictionary of DataFrames.
-    """
     data = {"Ayurveda": None, "Unani": None, "Siddha": None}
     base_url = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/main/"
-    
     for system in data.keys():
         try:
             data[system] = pd.read_csv(base_url + f"{system}_Codes_Terms.csv")
@@ -63,7 +66,6 @@ def load_all_data():
     return data
 
 def show_with_load_more(results, section_key, source="namaste", page_size=5):
-    """Displays results with a 'Load More' button."""
     if section_key not in st.session_state: st.session_state[section_key] = page_size
     visible_count = st.session_state[section_key]
 
@@ -74,7 +76,7 @@ def show_with_load_more(results, section_key, source="namaste", page_size=5):
         with st.expander(f"`{code}` - {term}"):
             if source.startswith("icd"):
                  st.markdown(f"**Definition:** {row.get('definition', 'N/A')}")
-            else: # NAMASTE
+            else:
                 st.markdown(f"**Explanation:** {row.get('Explanation', 'N/A')}")
 
     if len(results) > visible_count:
@@ -82,7 +84,7 @@ def show_with_load_more(results, section_key, source="namaste", page_size=5):
         if st.button("Load More", key=f"load_more_{section_key}"):
             st.session_state[section_key] += page_size
             st.rerun()
-            
+
 def handle_api_request(endpoint, query):
     try:
         response = requests.get(f"{BACKEND_URL}{endpoint}", params={"q": query}, timeout=20)
@@ -99,13 +101,16 @@ all_data = load_all_data()
 
 for system, df in all_data.items():
     if df.empty:
-        st.error(f"Failed to load {system}_Codes_Terms.csv from GitHub. Please check the file path and repository.")
+        st.error(f"Failed to load {system}_Codes_Terms.csv from GitHub.")
 
-# --- NEW: Reorganized Main Tabs ---
-search_tab, map_tab, bundle_tab = st.tabs(["⚕️ Terminology Search", " NAMASTE <-> ICD-11 Mapper", "🧾 Save Bundle"])
+search_tab, map_tab, bundle_tab = st.tabs([
+    "⚕️ Terminology Search", 
+    " NAMASTE <-> ICD-11 Mapper", 
+    "🧾 Save Bundle"
+])
 
 with search_tab:
-    query = st.text_input("🔍 Search all terminologies", help="Try 'Jwara', 'Fever', or 'Vertigo'")
+    query = st.text_input("🔍 Search all terminologies", help="Try 'Jwara', 'Fever', 'Vertigo'")
     
     if 'current_query' not in st.session_state or st.session_state.current_query != query:
         st.session_state.current_query = query
@@ -113,12 +118,10 @@ with search_tab:
             if key in st.session_state: del st.session_state[key]
     
     if query:
-        # --- NEW: Nested Tabs for NAMASTE and ICD ---
         namaste_search_tab, icd_search_tab = st.tabs(["NAMASTE Terminologies", "WHO ICD-11 Terminologies"])
 
         with namaste_search_tab:
             ayur_tab, unani_tab, siddha_tab = st.tabs(["Ayurveda", "Unani", "Siddha"])
-            
             for system, tab in [("Ayurveda", ayur_tab), ("Unani", unani_tab), ("Siddha", siddha_tab)]:
                 with tab:
                     df = all_data[system]
@@ -127,12 +130,9 @@ with search_tab:
                         results = df[mask].to_dict("records")
                         st.write(f"Found {len(results)} matches.")
                         if results: show_with_load_more(results, system.lower(), "namaste")
-                    else:
-                        st.warning(f"{system} data is not available.")
         
         with icd_search_tab:
             bio_tab, tm2_tab = st.tabs(["Biomedicine", "TM2"])
-
             with bio_tab:
                 results = handle_api_request("/search", query)
                 st.write(f"Found {len(results)} matches.")
@@ -168,25 +168,17 @@ with map_tab:
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.markdown(
-                            f"""
-                            <div class="mapper-card">
+                        st.markdown(f"""<div class="mapper-card">
                                 <h3>Source: NAMASTE ({source.get('system')})</h3>
                                 <p><strong>Code:</strong> <code>{source.get('code')}</code></p>
                                 <p><strong>Term:</strong> {source.get('term')}</p>
                                 <p><strong>Definition:</strong> {source.get('definition')}</p>
-                            </div>
-                            """, unsafe_allow_html=True
-                        )
+                            </div>""", unsafe_allow_html=True)
                     with col2:
-                        st.markdown(
-                            f"""
-                            <div class="mapper-card">
-                                <h3>Best ICD-11 Match</h3>
-                                {"<p>No suitable match found in ICD-11.</p>" if not matches else ""}
-                            </div>
-                            """, unsafe_allow_html=True
-                        )
+                        st.markdown(f"""<div class="mapper-card">
+                                <h3>Best ICD-11 Match(es)</h3>
+                                {'<p>No suitable match found in ICD-11.</p>' if not matches else ''}
+                            </div>""", unsafe_allow_html=True)
                         if matches:
                             for match in matches:
                                 with st.container(border=True):
