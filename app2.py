@@ -8,6 +8,13 @@ import pandas as pd
 from datetime import datetime
 from db_helper import DatabaseHelper
 import json
+from fuzzywuzzy import fuzz
+from difflib import SequenceMatcher
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer
+import string
 
 # -------------------
 # Load secrets & Initialize App
@@ -23,10 +30,21 @@ app = Flask(__name__)
 db = DatabaseHelper()
 
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
-API_URL = "https://id.who.int/icd/release/11/2024-01/mms" # Use the correct, versioned API URL
+API_URL = "https://id.who.int/icd/release/11/2024-01/mms"
+
+# Initialize NLTK components (download if needed)
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
 
 # -------------------
-# DATA LOADING (from GitHub, now including Siddha)
+# DATA LOADING
 # -------------------
 ALL_NAMASTE_DATA = {}
 
@@ -51,10 +69,102 @@ def load_namaste_data_from_github():
             ALL_NAMASTE_DATA[term_system] = []
 
 # -------------------
-# Helper Functions
+# Dynamic NLP Processing Functions
+# -------------------
+class DynamicTermProcessor:
+    def __init__(self):
+        self.stemmer = PorterStemmer()
+        self.stop_words = set(stopwords.words('english'))
+        
+        # Medical term patterns for better extraction
+        self.medical_patterns = [
+            r'\b(?:disease|disorder|condition|syndrome|symptom|pain|ache)\b',
+            r'\b(?:fever|headache|nausea|vomiting|diarrhea|constipation)\b',
+            r'\b(?:inflammation|infection|swelling|bleeding|weakness)\b',
+            r'\b(?:chronic|acute|severe|mild|persistent|intermittent)\b'
+        ]
+    
+    def extract_medical_terms(self, text):
+        """Extract medical terms from text using NLP."""
+        if not isinstance(text, str):
+            return []
+        
+        # Clean and normalize text
+        text = text.lower().strip()
+        
+        # Remove content in brackets and parentheses
+        text = re.sub(r'[\[\(].*?[\]\)]', '', text)
+        
+        # Extract sentences and split by common delimiters
+        sentences = re.split(r'[.;,/\-]', text)
+        
+        extracted_terms = []
+        
+        for sentence in sentences:
+            # Clean sentence
+            sentence = re.sub(r'[^\w\s]', ' ', sentence)
+            
+            # Tokenize
+            words = word_tokenize(sentence)
+            
+            # Remove stopwords and short words
+            meaningful_words = [w for w in words if w not in self.stop_words and len(w) > 2]
+            
+            # Check for medical patterns
+            sentence_clean = ' '.join(meaningful_words)
+            for pattern in self.medical_patterns:
+                matches = re.findall(pattern, sentence_clean)
+                extracted_terms.extend(matches)
+            
+            # Add meaningful word combinations
+            if len(meaningful_words) >= 2:
+                # Add 2-word combinations
+                for i in range(len(meaningful_words) - 1):
+                    combo = ' '.join(meaningful_words[i:i+2])
+                    if len(combo) > 5:  # Skip very short combinations
+                        extracted_terms.append(combo)
+            
+            # Add individual meaningful words
+            for word in meaningful_words:
+                if len(word) > 3:
+                    extracted_terms.append(word)
+        
+        # Remove duplicates and return top terms
+        unique_terms = list(set(extracted_terms))
+        return unique_terms[:10]  # Return top 10 terms
+    
+    def generate_search_variants(self, term):
+        """Generate search variants for a term."""
+        variants = [term]
+        
+        # Add stemmed version
+        stemmed = self.stemmer.stem(term)
+        if stemmed != term:
+            variants.append(stemmed)
+        
+        # Add plural/singular variants
+        if term.endswith('s'):
+            variants.append(term[:-1])  # Remove 's' for singular
+        else:
+            variants.append(term + 's')  # Add 's' for plural
+        
+        # Add common medical suffix variants
+        medical_suffixes = ['itis', 'osis', 'emia', 'pathy', 'algia']
+        for suffix in medical_suffixes:
+            if term.endswith(suffix):
+                root = term[:-len(suffix)]
+                variants.append(root)
+            else:
+                variants.append(term + suffix)
+        
+        return list(set(variants))  # Remove duplicates
+
+# -------------------
+# Enhanced Helper Functions
 # -------------------
 def get_who_token():
-    if not CLIENT_ID or not CLIENT_SECRET: return None
+    if not CLIENT_ID or not CLIENT_SECRET: 
+        return None
     credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
     headers = {"Authorization": f"Basic {encoded_credentials}", "Content-Type": "application/x-www-form-urlencoded"}
@@ -67,42 +177,30 @@ def get_who_token():
         print(f"🔴 ERROR: Could not get WHO token. Reason: {e}")
         return None
 
-def _clean_search_query(text):
-    """
-    Intelligently cleans a NAMASTE definition to create a better search query for the WHO API.
-    This is the key to fixing the mapping feature.
-    """
-    if not isinstance(text, str):
-        return ""
-    # Remove content in brackets (e.g., [insensibility/meditatitve appearance])
-    text = re.sub(r'\[.*?\]', '', text)
-    # Remove non-alphanumeric characters except spaces and commas, which separate terms
-    text = re.sub(r'[^a-zA-Z0-9\s,]', '', text)
-    # The English definition is often the last part after a comma
-    parts = text.split(',')
-    clean_text = parts[-1].strip()
-    # If the result is very short, it might be a remnant; try to find a better part
-    if len(clean_text) < 10 and len(parts) > 1:
-        # Fallback to a potentially more descriptive part
-        for part in reversed(parts):
-            if len(part.strip()) > 10:
-                clean_text = part.strip()
-                break
-    return clean_text
-
-def who_api_search(query, chapter_filter=None):
+def who_api_search(query, chapter_filter=None, limit=10):
+    """Enhanced WHO API search with configurable limits."""
     token = get_who_token()
-    if not token: return []
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
+    if not token: 
+        return []
+    
+    headers = {
+        "Authorization": f"Bearer {token}", 
+        "Accept": "application/json", 
+        "API-Version": "v2", 
+        "Accept-Language": "en"
+    }
     params = {"q": query}
     if chapter_filter:
         params["useFlexisearch"] = "true"
         params["chapterFilter"] = chapter_filter
+    
     try:
         r = requests.get(f"{API_URL}/search", headers=headers, params=params, timeout=15)
         if r.status_code == 200:
             results = []
-            for ent in r.json().get("destinationEntities", []):
+            entities = r.json().get("destinationEntities", [])[:limit]  # Limit results
+            
+            for ent in entities:
                 results.append({
                     "code": ent.get("theCode", "N/A"),
                     "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""),
@@ -110,36 +208,182 @@ def who_api_search(query, chapter_filter=None):
                 })
             return results
         else:
-            print(f"🟡 WARNING: WHO API returned status {r.status_code} for query '{query}': {r.text}")
+            print(f"🟡 WARNING: WHO API returned status {r.status_code} for query '{query}'")
             return []
     except requests.exceptions.RequestException as e:
         print(f"🔴 ERROR: Could not connect to WHO Search API. Reason: {e}")
         return []
 
+def calculate_semantic_similarity(text1, text2):
+    """
+    Calculate semantic similarity between two medical texts.
+    """
+    if not text1 or not text2:
+        return 0
+    
+    # Normalize texts
+    text1_clean = re.sub(r'[^\w\s]', ' ', text1.lower())
+    text2_clean = re.sub(r'[^\w\s]', ' ', text2.lower())
+    
+    # Tokenize
+    tokens1 = set(word_tokenize(text1_clean))
+    tokens2 = set(word_tokenize(text2_clean))
+    
+    # Remove stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens1 = tokens1 - stop_words
+    tokens2 = tokens2 - stop_words
+    
+    # Calculate Jaccard similarity (intersection over union)
+    if not tokens1 or not tokens2:
+        jaccard_sim = 0
+    else:
+        intersection = tokens1.intersection(tokens2)
+        union = tokens1.union(tokens2)
+        jaccard_sim = len(intersection) / len(union)
+    
+    # Calculate fuzzy similarity
+    fuzz_sim = fuzz.ratio(text1.lower(), text2.lower()) / 100
+    
+    # Calculate sequence similarity
+    seq_sim = SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+    
+    # Weighted combination
+    final_score = (jaccard_sim * 0.4 + fuzz_sim * 0.3 + seq_sim * 0.3)
+    
+    return final_score
+
+def dynamic_mapping_engine(namaste_code, namaste_term, namaste_definition):
+    """
+    Core dynamic mapping engine that uses multiple strategies to find ICD-11 matches.
+    """
+    processor = DynamicTermProcessor()
+    all_candidates = []
+    
+    print(f"🔍 Starting dynamic mapping for {namaste_code}: {namaste_term}")
+    
+    # Strategy 1: Direct term search with variants
+    print("📋 Strategy 1: Direct term search")
+    direct_terms = [namaste_term] + processor.generate_search_variants(namaste_term)
+    for term in direct_terms[:5]:  # Limit to 5 variants
+        if len(term.strip()) > 2:
+            results = who_api_search(term.strip(), limit=5)
+            for result in results:
+                similarity = calculate_semantic_similarity(namaste_term, result["term"])
+                all_candidates.append({
+                    **result,
+                    "confidence": similarity,
+                    "method": "direct_term",
+                    "search_term": term
+                })
+    
+    # Strategy 2: Medical term extraction from definition
+    print("🔬 Strategy 2: Medical term extraction")
+    extracted_terms = processor.extract_medical_terms(namaste_definition)
+    for term in extracted_terms[:7]:  # Top 7 extracted terms
+        if len(term.strip()) > 2:
+            # Search in general ICD-11
+            results = who_api_search(term.strip(), limit=3)
+            for result in results:
+                def_similarity = calculate_semantic_similarity(namaste_definition, result["definition"])
+                term_similarity = calculate_semantic_similarity(term, result["term"])
+                combined_similarity = (def_similarity * 0.7 + term_similarity * 0.3)
+                
+                all_candidates.append({
+                    **result,
+                    "confidence": combined_similarity,
+                    "method": "definition_extraction",
+                    "search_term": term
+                })
+    
+    # Strategy 3: Traditional Medicine Module (TM2) specific search
+    print("🌿 Strategy 3: TM2 chapter search")
+    tm_search_terms = [namaste_term] + extracted_terms[:5]
+    for term in tm_search_terms:
+        if len(term.strip()) > 2:
+            results = who_api_search(term.strip(), chapter_filter="26", limit=3)
+            for result in results:
+                similarity = calculate_semantic_similarity(namaste_definition, result["definition"])
+                # Boost TM2 results since they're more relevant for traditional medicine
+                boosted_similarity = min(similarity * 1.3, 1.0)
+                
+                all_candidates.append({
+                    **result,
+                    "confidence": boosted_similarity,
+                    "method": "tm2_chapter",
+                    "search_term": term
+                })
+    
+    # Strategy 4: Symptom-based search
+    print("🩺 Strategy 4: Symptom-based search")
+    symptom_keywords = ['pain', 'ache', 'fever', 'nausea', 'weakness', 'inflammation', 'swelling']
+    definition_lower = namaste_definition.lower()
+    
+    for keyword in symptom_keywords:
+        if keyword in definition_lower:
+            results = who_api_search(keyword, limit=3)
+            for result in results:
+                similarity = calculate_semantic_similarity(namaste_definition, result["definition"])
+                all_candidates.append({
+                    **result,
+                    "confidence": similarity * 0.8,  # Slightly lower confidence for symptom-based
+                    "method": "symptom_based",
+                    "search_term": keyword
+                })
+    
+    # Remove duplicates based on ICD code
+    seen_codes = set()
+    unique_candidates = []
+    
+    for candidate in all_candidates:
+        code = candidate.get("code", "")
+        if code not in seen_codes and code != "N/A":
+            seen_codes.add(code)
+            unique_candidates.append(candidate)
+    
+    # Sort by confidence score
+    unique_candidates.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+    
+    # Return top 5 matches with detailed scoring
+    top_matches = unique_candidates[:5]
+    
+    print(f"✅ Found {len(top_matches)} unique matches with confidence scores")
+    for i, match in enumerate(top_matches):
+        print(f"   {i+1}. {match['code']} - {match['term'][:50]}... (confidence: {match['confidence']:.3f})")
+    
+    return top_matches
+
 # -------------------
 # Main API Routes
 # -------------------
 @app.route("/")
-def home(): return "WHO ICD + NAMASTE Demo Server 🚀"
+def home(): 
+    return "🚀 Dynamic NAMASTE ↔ ICD-11 Mapping Server"
 
 @app.route("/search")
 def search_biomedicine():
     q = request.args.get("q", "")
-    if not q: return jsonify({"results": []})
+    if not q: 
+        return jsonify({"results": []})
     return jsonify({"results": who_api_search(q, chapter_filter="!26")})
 
 @app.route("/search/tm2")
 def search_tm2():
     q = request.args.get("q", "")
-    if not q: return jsonify({"results": []})
+    if not q: 
+        return jsonify({"results": []})
     return jsonify({"results": who_api_search(q, chapter_filter="26")})
 
 @app.route("/map-code", methods=['POST'])
 def map_namaste_to_icd():
+    """Dynamic mapping endpoint - no static mappings used."""
     payload = request.get_json()
     namaste_code = payload.get("code")
-    if not namaste_code: return jsonify({"error": "No NAMASTE code provided"}), 400
+    
+    if not namaste_code: 
+        return jsonify({"error": "No NAMASTE code provided"}), 400
 
+    # Find the NAMASTE code details
     source_details = None
     for system, data in ALL_NAMASTE_DATA.items():
         found = next((item for item in data if item['code'] == namaste_code), None)
@@ -151,18 +395,47 @@ def map_namaste_to_icd():
     if not source_details:
         return jsonify({"error": f"Code '{namaste_code}' not found in any NAMASTE system."}), 404
 
-    # Use the cleaned definition for a high-quality, effective search query
-    search_query = _clean_search_query(source_details.get('definition', source_details.get('term', '')))
-    
-    icd_matches = who_api_search(search_query)
-
-    return jsonify({"source_details": source_details, "mapped_details": icd_matches[:5]})
+    try:
+        namaste_term = source_details.get('term', '')
+        namaste_definition = source_details.get('definition', '')
+        
+        # Use dynamic mapping engine
+        mapped_results = dynamic_mapping_engine(namaste_code, namaste_term, namaste_definition)
+        
+        # Format results for frontend
+        formatted_results = []
+        for result in mapped_results:
+            formatted_results.append({
+                "code": result["code"],
+                "term": result["term"],
+                "definition": result["definition"][:200] + "..." if len(result["definition"]) > 200 else result["definition"],
+                "confidence": f"{result.get('confidence', 0):.3f}",
+                "method": result.get('method', 'unknown'),
+                "search_term": result.get('search_term', 'N/A')
+            })
+        
+        return jsonify({
+            "source_details": source_details, 
+            "mapped_details": formatted_results,
+            "total_candidates_found": len(mapped_results),
+            "mapping_success": len(formatted_results) > 0
+        })
+        
+    except Exception as e:
+        print(f"🔴 ERROR in dynamic mapping: {e}")
+        return jsonify({
+            "source_details": source_details,
+            "mapped_details": [],
+            "error": f"Dynamic mapping failed: {str(e)}",
+            "mapping_success": False
+        }), 500
 
 # -------------------
 # FHIR-Specific Route
 # -------------------
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
+    """Process FHIR Bundle with dynamic mapping."""
     bundle = request.get_json()
     if not bundle or bundle.get("resourceType") != "Bundle":
         return jsonify({"error": "Invalid Bundle"}), 400
@@ -175,20 +448,58 @@ def receive_bundle():
             namaste_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
             
             if namaste_code_obj:
-                with app.test_request_context():
-                    map_response = app.test_client().post("/map-code", json={"code": namaste_code_obj['code']})
-                    if map_response.status_code == 200:
-                        map_data = map_response.get_json()
-                        if map_data.get("mapped_details"):
-                            best_match = map_data["mapped_details"][0]
-                            icd_coding = {"system": "http://id.who.int/icd/release/11/mms", "code": best_match['code'], "display": best_match['term']}
-                            codings.append(icd_coding)
+                try:
+                    with app.test_request_context():
+                        map_response = app.test_client().post("/map-code", json={"code": namaste_code_obj['code']})
+                        if map_response.status_code == 200:
+                            map_data = map_response.get_json()
+                            mapped_details = map_data.get("mapped_details", [])
+                            
+                            # Add the best match (highest confidence)
+                            if mapped_details:
+                                best_match = mapped_details[0]
+                                confidence_score = float(best_match.get('confidence', '0'))
+                                
+                                # Only add ICD coding if confidence is above threshold
+                                if confidence_score > 0.1:  # Minimum confidence threshold
+                                    icd_coding = {
+                                        "system": "http://id.who.int/icd/release/11/mms",
+                                        "code": best_match['code'],
+                                        "display": best_match['term']
+                                    }
+                                    codings.append(icd_coding)
+                                    
+                                    # Add metadata about the mapping
+                                    resource["meta"] = {
+                                        "tag": [{
+                                            "system": "https://demo.sih/fhir/CodeSystem/mapping-metadata",
+                                            "code": "dynamic-mapping",
+                                            "display": f"Dynamic mapping (confidence: {best_match.get('confidence', '0.000')}, method: {best_match.get('method', 'unknown')})"
+                                        }]
+                                    }
+                except Exception as e:
+                    print(f"🔴 ERROR in bundle dynamic mapping: {e}")
             
             processed_conditions.append(resource)
 
-    final_payload = {"status": "accepted", "stored": processed_conditions}
+    final_payload = {"status": "accepted", "stored": processed_conditions, "mapping_method": "dynamic"}
     db.save_bundle(final_payload)
     return jsonify(final_payload), 201
+
+# -------------------
+# Additional utility endpoints
+# -------------------
+@app.route("/mapping-health")
+def mapping_health():
+    """Health check for the dynamic mapping system."""
+    return jsonify({
+        "system_status": "operational",
+        "mapping_method": "fully_dynamic",
+        "nlp_components": "loaded",
+        "namaste_systems_loaded": list(ALL_NAMASTE_DATA.keys()),
+        "total_namaste_codes": sum(len(data) for data in ALL_NAMASTE_DATA.values()),
+        "who_api_status": "connected" if get_who_token() else "disconnected"
+    })
 
 # -------------------
 # Run
@@ -199,4 +510,3 @@ if __name__ == "__main__":
 else:
     # This runs when Gunicorn starts the app on Render
     load_namaste_data_from_github()
-

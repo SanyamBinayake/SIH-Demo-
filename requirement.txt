@@ -3,5 +3,8 @@ requests
 python-dotenv
 gunicorn
 pandas
-fhir.resources   # optional but recommended for FHIR validation
+fhir.resources
 psycopg2-binary
+fuzzywuzzy
+python-Levenshtein
+nltk
