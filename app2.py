@@ -9,7 +9,7 @@ from db_helper import DatabaseHelper
 import json
 
 # -------------------
-# Load secrets
+# Load secrets & Initialize App
 # -------------------
 load_dotenv()
 CLIENT_ID = os.getenv("WHO_CLIENT_ID")
@@ -17,35 +17,31 @@ CLIENT_SECRET = os.getenv("WHO_CLIENT_SECRET")
 
 if not CLIENT_ID or not CLIENT_SECRET:
     print("🔴 FATAL: WHO_CLIENT_ID or WHO_CLIENT_SECRET not found!")
-    print("🔴 On Render, set these in the 'Environment' tab. Locally, use a .env file.")
 
 app = Flask(__name__)
-
-# --- Initialize Database Helper ---
-# This is done here so it's globally accessible to the app
 db = DatabaseHelper()
 
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
 API_URL = "https://id.who.int/icd/release/11"
 
 # -------------------
-# DATA LOADING (from GitHub)
+# DATA LOADING (from GitHub, now including Siddha)
 # -------------------
 ALL_NAMASTE_DATA = {}
 
 def load_namaste_data_from_github():
-    """Loads Ayurveda and Unani data directly from GitHub at startup."""
+    """Loads Ayurveda, Unani, and Siddha data directly from GitHub at startup."""
     global ALL_NAMASTE_DATA
     base_url = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/main/"
     terminologies = {
         "Ayurveda": base_url + "Ayurveda_Codes_Terms.csv",
-        "Unani": base_url + "Unani_Codes_Terms.csv"
+        "Unani": base_url + "Unani_Codes_Terms.csv",
+        "Siddha": base_url + "Siddha_Codes_Terms.csv"
     }
     
     for term_system, url in terminologies.items():
         try:
             df = pd.read_csv(url)
-            # Standardize column names for easier processing
             df.rename(columns={"Explanation": "definition", "Term": "term", "Code": "code"}, inplace=True)
             ALL_NAMASTE_DATA[term_system] = df.to_dict('records')
             print(f"✅ [INFO] Loaded {len(ALL_NAMASTE_DATA[term_system])} codes from {term_system}.")
@@ -54,11 +50,11 @@ def load_namaste_data_from_github():
             ALL_NAMASTE_DATA[term_system] = []
 
 # -------------------
-# Helpers
+# Helper Functions
 # -------------------
 def get_who_token():
-    if not CLIENT_ID or not CLIENT_SECRET:
-        return None
+    # (This function remains unchanged)
+    if not CLIENT_ID or not CLIENT_SECRET: return None
     credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
     headers = {"Authorization": f"Basic {encoded_credentials}", "Content-Type": "application/x-www-form-urlencoded"}
@@ -72,21 +68,17 @@ def get_who_token():
         return None
 
 def who_api_search(query, chapter_filter=None):
-    """A generic helper to search the WHO API, with an optional chapter filter."""
+    # (This function remains unchanged)
     token = get_who_token()
     if not token: return []
-
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
     params = {"q": query}
     if chapter_filter:
-        params["useFlexisearch"] = "true" # Required for chapter filtering
+        params["useFlexisearch"] = "true"
         params["chapterFilter"] = chapter_filter
-    
     try:
-        # --- FIX: Added the specific API release version back into the URL ---
         search_url = f"{API_URL}/2024-01/mms/search"
         r = requests.get(search_url, headers=headers, params=params, timeout=15)
-        
         if r.status_code == 200:
             results = []
             for ent in r.json().get("destinationEntities", []):
@@ -107,63 +99,62 @@ def who_api_search(query, chapter_filter=None):
 # Main API Routes
 # -------------------
 @app.route("/")
-def home():
-    return "WHO ICD + NAMASTE Demo Server 🚀"
+def home(): return "WHO ICD + NAMASTE Demo Server 🚀"
 
 @app.route("/search")
 def search_biomedicine():
     q = request.args.get("q", "")
     if not q: return jsonify({"results": []})
-    results = who_api_search(q, chapter_filter="!26") # Exclude TM2
-    return jsonify({"results": results})
+    return jsonify({"results": who_api_search(q, chapter_filter="!26")})
 
 @app.route("/search/tm2")
 def search_tm2():
     q = request.args.get("q", "")
     if not q: return jsonify({"results": []})
-    results = who_api_search(q, chapter_filter="26") # ONLY TM2
-    return jsonify({"results": results})
+    return jsonify({"results": who_api_search(q, chapter_filter="26")})
 
-@app.route("/translate", methods=['POST'])
-def translate_terminology():
+# --- NEW: Semantic Mapping Endpoint ---
+@app.route("/map-code", methods=['POST'])
+def map_namaste_to_icd():
+    """
+    Takes a NAMASTE code, finds its definition, and performs a semantic
+    search against ICD-11 to find the best conceptual match.
+    """
     payload = request.get_json()
-    source = payload.get("source")
-    target = payload.get("target")
-    query = payload.get("query")
+    namaste_code = payload.get("code")
 
-    if not all([source, target, query]):
-        return jsonify({"error": "Missing source, target, or query"}), 400
+    if not namaste_code:
+        return jsonify({"error": "No NAMASTE code provided"}), 400
 
-    search_term = query
-    # If source is NAMASTE, find the English term to search in ICD-11
-    if source.startswith("NAMASTE"):
-        system = source.split('-')[1] # Ayurveda or Unani
-        # Find the term associated with the code
-        found_entry = next((item for item in ALL_NAMASTE_DATA.get(system, []) if item['code'] == query), None)
-        if found_entry:
-            search_term = found_entry['term']
+    # Find the NAMASTE entry across all loaded systems
+    source_details = None
+    for system in ["Ayurveda", "Unani", "Siddha"]:
+        found = next((item for item in ALL_NAMASTE_DATA.get(system, []) if item['code'] == namaste_code), None)
+        if found:
+            source_details = found
+            source_details['system'] = system # Add which system it came from
+            break
+            
+    if not source_details:
+        return jsonify({"error": f"Code '{namaste_code}' not found in any NAMASTE system."}), 404
 
-    matches = []
-    # If target is ICD-11, search the WHO API
-    if target.startswith("ICD-11"):
-        chapter = "26" if "TM2" in target else "!26"
-        matches = who_api_search(search_term, chapter_filter=chapter)
+    # Use the full definition for a high-quality search query
+    search_query = source_details.get('definition', source_details.get('term', ''))
     
-    # If target is NAMASTE, search the loaded data
-    elif target.startswith("NAMASTE"):
-        system = target.split('-')[1] # Ayurveda or Unani
-        query_lower = search_term.lower()
-        for item in ALL_NAMASTE_DATA.get(system, []):
-            if query_lower in str(item['term']).lower() or query_lower in str(item['definition']).lower():
-                matches.append({"code": item['code'], "term": item['term'], "explanation": item['definition']})
+    # Search both Biomedicine and TM2 for the best possible matches
+    icd_matches = who_api_search(search_query)
 
-    return jsonify({"match_count": len(matches), "matches": matches})
+    return jsonify({
+        "source_details": source_details,
+        "mapped_details": icd_matches[:5] # Return top 5 matches
+    })
 
 # -------------------
-# FHIR-Specific Routes
+# FHIR-Specific Route (remains for dual-coding)
 # -------------------
 @app.route("/fhir/Bundle", methods=["POST"])
 def receive_bundle():
+    # (This function remains largely unchanged but could be enhanced to use the new mapper)
     bundle = request.get_json()
     if not bundle or bundle.get("resourceType") != "Bundle":
         return jsonify({"error": "Invalid Bundle"}), 400
@@ -173,37 +164,25 @@ def receive_bundle():
         resource = entry.get("resource", {})
         if resource.get("resourceType") == "Condition":
             codings = resource.get("code", {}).get("coding", [])
-            nam_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
+            namaste_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
             
-            if nam_code_obj:
-                # Use the internal translate function by calling the endpoint
+            if namaste_code_obj:
                 with app.test_request_context():
-                    translate_response = app.test_client().post(
-                        "/translate",
-                        json={
-                            "source": "NAMASTE-Ayurveda", # Assuming Ayurveda for now, can be enhanced
-                            "target": "ICD-11-Biomedicine",
-                            "query": nam_code_obj['code']
-                        }
-                    )
-                    if translate_response.status_code == 200:
-                        translate_data = translate_response.get_json()
-                        if translate_data.get("matches"):
-                            best_match = translate_data["matches"][0]
+                    map_response = app.test_client().post("/map-code", json={"code": namaste_code_obj['code']})
+                    if map_response.status_code == 200:
+                        map_data = map_response.get_json()
+                        if map_data.get("mapped_details"):
+                            best_match = map_data["mapped_details"][0]
                             icd_coding = {
                                 "system": "http://id.who.int/icd/release/11/mms",
-                                "code": best_match['code'],
-                                "display": best_match['term']
+                                "code": best_match['code'], "display": best_match['term']
                             }
                             codings.append(icd_coding)
             
             processed_conditions.append(resource)
 
     final_payload = {"status": "accepted", "stored": processed_conditions}
-    
-    # Save the final bundle to the database
     db.save_bundle(final_payload)
-    
     return jsonify(final_payload), 201
 
 # -------------------
@@ -213,6 +192,5 @@ if __name__ == "__main__":
     load_namaste_data_from_github()
     app.run(debug=True, port=5000)
 else:
-    # This runs when Gunicorn starts the app on Render
     load_namaste_data_from_github()
 
