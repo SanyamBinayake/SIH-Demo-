@@ -11,7 +11,6 @@ BACKEND_URL = "https://sih-demo-4z5c.onrender.com"
 # --------------------
 st.set_page_config(layout="wide")
 
-# --- UPDATED: Changed the background color to a light theme ---
 st.markdown("""
 <style>
 /* Target the title header */
@@ -30,6 +29,8 @@ div[data-testid="stTextInput"] label {
     border-radius: 10px;
     border: 1px solid #D3D3D3; /* Light border */
     height: 100%;
+    overflow-y: auto; /* Add scroll for long content */
+    max-height: 400px; /* Set a max height */
 }
 .mapper-card h3 {
     margin-top: 0;
@@ -38,6 +39,12 @@ div[data-testid="stTextInput"] label {
 .mapper-card code {
     background-color: #E6E6E6; /* Slightly darker background for code */
     color: #31333F;
+}
+.match-container {
+    border: 1px solid #D3D3D3;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -174,20 +181,33 @@ with map_tab:
                                 <p><strong>Term:</strong> {source.get('term')}</p>
                                 <p><strong>Definition:</strong> {source.get('definition')}</p>
                             </div>""", unsafe_allow_html=True)
+                    
+                    # --- THIS IS THE CORRECTED SECTION ---
                     with col2:
-                        st.markdown(f"""<div class="mapper-card">
-                                <h3>Best ICD-11 Match(es)</h3>
-                                {'<p>No suitable match found in ICD-11.</p>' if not matches else ''}
-                            </div>""", unsafe_allow_html=True)
-                        if matches:
+                        # Build the entire HTML content for the right card in a string
+                        right_card_html = '<div class="mapper-card"><h3>Best ICD-11 Match(es)</h3>'
+                        
+                        if not matches:
+                            right_card_html += '<p>No suitable match found in ICD-11.</p>'
+                        else:
                             for match in matches:
-                                with st.container(border=True):
-                                     st.markdown(f"<strong>Code:</strong> <code>{match.get('code')}</code>", unsafe_allow_html=True)
-                                     st.markdown(f"<strong>Term:</strong> {match.get('term')}", unsafe_allow_html=True)
-                                     st.markdown(f"<strong>Definition:</strong> {match.get('definition')}", unsafe_allow_html=True)
+                                right_card_html += f"""
+                                <div class="match-container">
+                                    <p><strong>Code:</strong> <code>{match.get('code')}</code></p>
+                                    <p><strong>Term:</strong> {match.get('term')}</p>
+                                    <p><strong>Definition:</strong> {match.get('definition')}</p>
+                                </div>
+                                """
+                        
+                        right_card_html += '</div>' # Close the main card div
+                        
+                        st.markdown(right_card_html, unsafe_allow_html=True)
+                    # --- END OF CORRECTED SECTION ---
 
                 except requests.exceptions.RequestException as e:
                     st.error(f"Mapping failed. Could not connect to the backend: {e}")
+                except Exception as e:
+                    st.error(f"An unexpected error occurred: {e}")
 
 with bundle_tab:
     st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
@@ -208,3 +228,4 @@ with bundle_tab:
                         st.json(resp.json())
                 except requests.exceptions.RequestException as e:
                     st.error(f"❌ Error connecting to the backend: {e}")
+
