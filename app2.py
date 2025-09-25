@@ -23,7 +23,7 @@ app = Flask(__name__)
 db = DatabaseHelper()
 
 TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
-API_URL = "https://id.who.int/icd/release/11/2024-01/mms" # Correct, versioned API URL
+API_URL = "https://id.who.int/icd/release/11/2024-01/mms" # Use the correct, versioned API URL
 
 # -------------------
 # DATA LOADING (from GitHub, now including Siddha)
@@ -70,17 +70,24 @@ def get_who_token():
 def _clean_search_query(text):
     """
     Intelligently cleans a NAMASTE definition to create a better search query for the WHO API.
-    Removes special characters, bracketed content, and non-English terms.
+    This is the key to fixing the mapping feature.
     """
     if not isinstance(text, str):
         return ""
-    # Remove content in brackets (like [insensibility/meditatitve appearance])
+    # Remove content in brackets (e.g., [insensibility/meditatitve appearance])
     text = re.sub(r'\[.*?\]', '', text)
-    # Remove non-alphanumeric characters except spaces and commas
+    # Remove non-alphanumeric characters except spaces and commas, which separate terms
     text = re.sub(r'[^a-zA-Z0-9\s,]', '', text)
-    # Split by comma and take the last part, which is often the English definition
+    # The English definition is often the last part after a comma
     parts = text.split(',')
     clean_text = parts[-1].strip()
+    # If the result is very short, it might be a remnant; try to find a better part
+    if len(clean_text) < 10 and len(parts) > 1:
+        # Fallback to a potentially more descriptive part
+        for part in reversed(parts):
+            if len(part.strip()) > 10:
+                clean_text = part.strip()
+                break
     return clean_text
 
 def who_api_search(query, chapter_filter=None):
@@ -142,9 +149,9 @@ def map_namaste_to_icd():
             break
             
     if not source_details:
-        return jsonify({"error": f"Code '{namaste_code}' not found."}), 404
+        return jsonify({"error": f"Code '{namaste_code}' not found in any NAMASTE system."}), 404
 
-    # Use the cleaned definition for a high-quality search
+    # Use the cleaned definition for a high-quality, effective search query
     search_query = _clean_search_query(source_details.get('definition', source_details.get('term', '')))
     
     icd_matches = who_api_search(search_query)
@@ -190,5 +197,6 @@ if __name__ == "__main__":
     load_namaste_data_from_github()
     app.run(debug=True, port=5000)
 else:
+    # This runs when Gunicorn starts the app on Render
     load_namaste_data_from_github()
 
