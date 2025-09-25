@@ -1,203 +1,215 @@
-import streamlit as st
-import pandas as pd
-import re
+from flask import Flask, jsonify, request
 import requests
+import os
+from dotenv import load_dotenv
+import base64
+import pandas as pd
+from datetime import datetime
+from db_helper import DatabaseHelper
+import json
 
-# Set your backend URL here
-BACKEND_URL = "https://sih-demo-4z5c.onrender.com"
+# -------------------
+# Load secrets
+# -------------------
+load_dotenv()
+CLIENT_ID = os.getenv("WHO_CLIENT_ID")
+CLIENT_SECRET = os.getenv("WHO_CLIENT_SECRET")
 
-# --------------------
-# UI Customization Section
-# --------------------
-# 1. Inject custom CSS with st.markdown
-st.markdown("""
-<style>
-/* Target the title header */
-h1#unified-namaste-who-icd-search {
-    font-size: 26px; font-weight: 600; line-height: 1.2;
-}
-/* Target the input box label */
-div[data-testid="stTextInput"] label {
-    font-size: 18px !important; font-weight: 500;
-}
-</style>
-""", unsafe_allow_html=True)
+if not CLIENT_ID or not CLIENT_SECRET:
+    print("🔴 FATAL: WHO_CLIENT_ID or WHO_CLIENT_SECRET not found!")
+    print("🔴 On Render, set these in the 'Environment' tab. Locally, use a .env file.")
 
-# 2. Create a custom header with your logo and the new title
-LOGO_URL = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/3c131c7e8b87c00be561ae349a84bf7654acd7ad/mediunify_logo_1_-removebg-preview.png"
+app = Flask(__name__)
 
-st.markdown(f"""
-<div style="display: flex; align-items: center; margin-bottom: 20px;">
-    <img src="{LOGO_URL}" alt="Logo" style="height: 50px; margin-right: 15px;">
-    <h1 id="unified-namaste-who-icd-search">Unified NAMASTE + WHO ICD Search</h1>
-</div>
-""", unsafe_allow_html=True)
+# --- Initialize Database Helper ---
+# This is done here so it's globally accessible to the app
+db = DatabaseHelper()
 
-# --------------------
-# Helper Functions
-# --------------------
-@st.cache_data
-def load_all_data():
-    """Loads all terminology CSVs into a dictionary of DataFrames."""
-    data = {"ayurveda": None, "unani": None, "siddha": None}
+TOKEN_URL = "https://icdaccessmanagement.who.int/connect/token"
+API_URL = "https://id.who.int/icd/release/11"
+
+# -------------------
+# DATA LOADING (from GitHub)
+# -------------------
+ALL_NAMASTE_DATA = {}
+
+def load_namaste_data_from_github():
+    """Loads Ayurveda and Unani data directly from GitHub at startup."""
+    global ALL_NAMASTE_DATA
     base_url = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/main/"
+    terminologies = {
+        "Ayurveda": base_url + "Ayurveda_Codes_Terms.csv",
+        "Unani": base_url + "Unani_Codes_Terms.csv"
+    }
+    
+    for term_system, url in terminologies.items():
+        try:
+            df = pd.read_csv(url)
+            # Standardize column names for easier processing
+            df.rename(columns={"Explanation": "definition", "Term": "term", "Code": "code"}, inplace=True)
+            ALL_NAMASTE_DATA[term_system] = df.to_dict('records')
+            print(f"✅ [INFO] Loaded {len(ALL_NAMASTE_DATA[term_system])} codes from {term_system}.")
+        except Exception as e:
+            print(f"🔴 ERROR: Failed to load {term_system} data from GitHub: {e}")
+            ALL_NAMASTE_DATA[term_system] = []
+
+# -------------------
+# Helpers
+# -------------------
+def get_who_token():
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return None
+    credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    headers = {"Authorization": f"Basic {encoded_credentials}", "Content-Type": "application/x-www-form-urlencoded"}
+    data = {"scope": "icdapi_access", "grant_type": "client_credentials"}
+    try:
+        r = requests.post(TOKEN_URL, data=data, headers=headers, timeout=10)
+        r.raise_for_status()
+        return r.json().get("access_token")
+    except requests.exceptions.RequestException as e:
+        print(f"🔴 ERROR: Could not get WHO token. Reason: {e}")
+        return None
+
+def who_api_search(query, chapter_filter=None):
+    """A generic helper to search the WHO API, with an optional chapter filter."""
+    token = get_who_token()
+    if not token: return []
+
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "API-Version": "v2", "Accept-Language": "en"}
+    params = {"q": query}
+    if chapter_filter:
+        params["useFlexisearch"] = "true" # Required for chapter filtering
+        params["chapterFilter"] = chapter_filter
     
     try:
-        data["ayurveda"] = pd.read_csv(base_url + "Ayurveda_Codes_Terms.csv")
-        st.success("Ayurveda data loaded successfully.")
-    except Exception as e:
-        st.error(f"Failed to load Ayurveda_Codes_Terms.csv from GitHub: {e}")
-        data["ayurveda"] = pd.DataFrame()
-
-    try:
-        data["unani"] = pd.read_csv(base_url + "Unani_Codes_Terms.csv")
-        st.success("Unani data loaded successfully.")
-    except Exception as e:
-        st.error(f"Failed to load Unani_Codes_Terms.csv from GitHub: {e}")
-        data["unani"] = pd.DataFrame()
-        
-    # Placeholder for Siddha data
-    data["siddha"] = pd.DataFrame()
-    st.info("Siddha data is not yet available and has been loaded as an empty set.")
-
-    return data
-
-def show_with_load_more(results, section_key, page_size=15):
-    """Displays a list of results with a "Load More" button for pagination."""
-    if section_key not in st.session_state:
-        st.session_state[section_key] = page_size
-    visible_count = st.session_state[section_key]
-
-    for row in results[:visible_count]:
-        with st.expander(f"`{row.get('Code', 'N/A')}` - {row.get('Term', 'N/A')}"):
-            st.markdown(f"**Explanation:** {row.get('Explanation', 'N/A')}")
-
-    if len(results) > visible_count:
-        st.write(f"Showing {visible_count} of {len(results)} results.")
-        if st.button("Load More", key=f"load_more_{section_key}"):
-            st.session_state[section_key] += page_size
-            st.rerun()
-            
-def handle_api_request(endpoint, query):
-    try:
-        response = requests.get(f"{BACKEND_URL}{endpoint}", params={"q": query}, timeout=20)
-        response.raise_for_status()
-        return response.json().get("results", [])
+        r = requests.get(f"{API_URL}/mms/search", headers=headers, params=params, timeout=15)
+        if r.status_code == 200:
+            results = []
+            for ent in r.json().get("destinationEntities", []):
+                results.append({
+                    "code": ent.get("theCode", "N/A"),
+                    "term": ent.get("title", "").replace("<em class='found'>", "").replace("</em>", ""),
+                    "definition": ent.get("definition", {}).get("@value", "No definition available.")
+                })
+            return results
+        else:
+            print(f"🟡 WARNING: WHO API returned status {r.status_code} for query '{query}': {r.text}")
+            return []
     except requests.exceptions.RequestException as e:
-        st.error(f"Failed to connect to the backend API. Error: {e}")
+        print(f"🔴 ERROR: Could not connect to WHO Search API. Reason: {e}")
         return []
 
-# --------------------
-# Main Application Logic
-# --------------------
-all_data = load_all_data()
+# -------------------
+# Main API Routes
+# -------------------
+@app.route("/")
+def home():
+    return "WHO ICD + NAMASTE Demo Server 🚀"
 
-# Create main tabs
-search_tab, translate_tab, bundle_tab = st.tabs(["⚕️ Terminology Search", "↔️ Translation", "🧾 Save Bundle"])
+@app.route("/search")
+def search_biomedicine():
+    q = request.args.get("q", "")
+    if not q: return jsonify({"results": []})
+    results = who_api_search(q, chapter_filter="!26") # Exclude TM2
+    return jsonify({"results": results})
 
-with search_tab:
-    query = st.text_input("🔍 Search for a diagnosis (term, code, or explanation)", help="Try 'Jwara', 'Fever', or 'Vertigo'")
+@app.route("/search/tm2")
+def search_tm2():
+    q = request.args.get("q", "")
+    if not q: return jsonify({"results": []})
+    results = who_api_search(q, chapter_filter="26") # ONLY TM2
+    return jsonify({"results": results})
+
+@app.route("/translate", methods=['POST'])
+def translate_terminology():
+    payload = request.get_json()
+    source = payload.get("source")
+    target = payload.get("target")
+    query = payload.get("query")
+
+    if not all([source, target, query]):
+        return jsonify({"error": "Missing source, target, or query"}), 400
+
+    search_term = query
+    # If source is NAMASTE, find the English term to search in ICD-11
+    if source.startswith("NAMASTE"):
+        system = source.split('-')[1] # Ayurveda or Unani
+        # Find the term associated with the code
+        found_entry = next((item for item in ALL_NAMASTE_DATA.get(system, []) if item['code'] == query), None)
+        if found_entry:
+            search_term = found_entry['term']
+
+    matches = []
+    # If target is ICD-11, search the WHO API
+    if target.startswith("ICD-11"):
+        chapter = "26" if "TM2" in target else "!26"
+        matches = who_api_search(search_term, chapter_filter=chapter)
     
-    if 'current_query' not in st.session_state or st.session_state.current_query != query:
-        st.session_state.current_query = query
-        for key in ["ayurveda", "unani", "siddha", "icd_bio", "icd_tm2"]:
-            if key in st.session_state:
-                del st.session_state[key]
-    
-    if query:
-        query_lower = query.lower()
-        
-        st.subheader("NAMASTE Terminologies")
-        namaste_ayur, namaste_unani, namaste_siddha = st.tabs(["Ayurveda", "Unani", "Siddha"])
-        
-        with namaste_ayur:
-            df = all_data["ayurveda"]
-            if not df.empty:
-                mask = df.apply(lambda row: any(query_lower in str(cell).lower() for cell in row), axis=1)
-                results = df[mask].to_dict("records")
-                st.write(f"Found {len(results)} total matches.")
-                if results: show_with_load_more(results, "ayurveda")
+    # If target is NAMASTE, search the loaded data
+    elif target.startswith("NAMASTE"):
+        system = target.split('-')[1] # Ayurveda or Unani
+        query_lower = search_term.lower()
+        for item in ALL_NAMASTE_DATA.get(system, []):
+            if query_lower in str(item['term']).lower() or query_lower in str(item['definition']).lower():
+                matches.append({"code": item['code'], "term": item['term'], "explanation": item['definition']})
 
-        with namaste_unani:
-            df = all_data["unani"]
-            if not df.empty:
-                mask = df.apply(lambda row: any(query_lower in str(cell).lower() for cell in row), axis=1)
-                results = df[mask].to_dict("records")
-                st.write(f"Found {len(results)} total matches.")
-                if results: show_with_load_more(results, "unani")
+    return jsonify({"match_count": len(matches), "matches": matches})
 
-        with namaste_siddha:
-            st.warning("Siddha terminology data is not yet available.")
+# -------------------
+# FHIR-Specific Routes
+# -------------------
+@app.route("/fhir/Bundle", methods=["POST"])
+def receive_bundle():
+    bundle = request.get_json()
+    if not bundle or bundle.get("resourceType") != "Bundle":
+        return jsonify({"error": "Invalid Bundle"}), 400
 
-        st.subheader("WHO ICD-11 Terminologies")
-        icd_bio, icd_tm2 = st.tabs(["Biomedicine", "TM2"])
-
-        with icd_bio:
-            results = handle_api_request("/search", query)
-            st.write(f"Found {len(results)} total matches.")
-            if results: show_with_load_more(results, "icd_bio")
+    processed_conditions = []
+    for entry in bundle.get("entry", []):
+        resource = entry.get("resource", {})
+        if resource.get("resourceType") == "Condition":
+            codings = resource.get("code", {}).get("coding", [])
+            nam_code_obj = next((c for c in codings if "namaste" in c.get("system", "")), None)
             
-        with icd_tm2:
-            results = handle_api_request("/search/tm2", query)
-            st.write(f"Found {len(results)} total matches.")
-            if results: show_with_load_more(results, "icd_tm2")
-    else:
-        st.info("Type a diagnosis in the search box above to begin.")
+            if nam_code_obj:
+                # Use the internal translate function by calling the endpoint
+                with app.test_request_context():
+                    translate_response = app.test_client().post(
+                        "/translate",
+                        json={
+                            "source": "NAMASTE-Ayurveda", # Assuming Ayurveda for now, can be enhanced
+                            "target": "ICD-11-Biomedicine",
+                            "query": nam_code_obj['code']
+                        }
+                    )
+                    if translate_response.status_code == 200:
+                        translate_data = translate_response.get_json()
+                        if translate_data.get("matches"):
+                            best_match = translate_data["matches"][0]
+                            icd_coding = {
+                                "system": "http://id.who.int/icd/release/11/mms",
+                                "code": best_match['code'],
+                                "display": best_match['term']
+                            }
+                            codings.append(icd_coding)
+            
+            processed_conditions.append(resource)
 
-with translate_tab:
-    st.subheader("Translate Between Terminologies")
-    st.info("Enter a code or term from a source system to find its equivalent in a target system.")
+    final_payload = {"status": "accepted", "stored": processed_conditions}
     
-    col1, col2 = st.columns(2)
-    with col1:
-        source_system = st.selectbox("Source System", ["NAMASTE-Ayurveda", "NAMASTE-Unani", "ICD-11-Biomedicine", "ICD-11-TM2"])
-    with col2:
-        target_system = st.selectbox("Target System", ["ICD-11-Biomedicine", "ICD-11-TM2", "NAMASTE-Ayurveda", "NAMASTE-Unani"])
-        
-    term_to_translate = st.text_input("Enter code or term to translate")
+    # Save the final bundle to the database
+    db.save_bundle(final_payload)
+    
+    return jsonify(final_payload), 201
 
-    if st.button("Translate"):
-        if not term_to_translate:
-            st.warning("Please enter a term or code to translate.")
-        else:
-            with st.spinner("Translating..."):
-                try:
-                    payload = {"source": source_system, "target": target_system, "query": term_to_translate}
-                    response = requests.post(f"{BACKEND_URL}/translate", json=payload, timeout=30)
-                    response.raise_for_status()
-                    translation_results = response.json()
-                    
-                    st.success("Translation complete!")
-                    st.write(f"Found **{translation_results.get('match_count', 0)}** potential matches:")
-                    
-                    for match in translation_results.get("matches", []):
-                        with st.container(border=True):
-                            st.markdown(f"**Code:** `{match.get('code')}`")
-                            st.markdown(f"**Term:** {match.get('term')}")
-                            if "definition" in match:
-                                st.markdown(f"**Definition:** {match.get('definition')}")
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Translation failed. Could not connect to the backend: {e}")
-
-with bundle_tab:
-    st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
-    namaste_code = st.text_input("Enter NAMASTE code (e.g., AYU-AAA-1)", key="bundle_namaste_code")
-    patient_id = st.text_input("Enter Patient ID", "Patient/001", key="bundle_patient_id")
-    if st.button("Save Condition Bundle"):
-        if not namaste_code:
-            st.warning("Please enter a NAMASTE code.")
-        else:
-            with st.spinner("Saving bundle..."):
-                bundle = {"resourceType": "Bundle", "type": "collection", "entry": [{"resource": {"resourceType": "Condition", "code": {"coding": [{"system": "https://demo.sih/fhir/CodeSystem/namaste", "code": namaste_code, "display": "NAMASTE term"}]}, "subject": {"reference": patient_id}}}]}
-                try:
-                    resp = requests.post(f"{BACKEND_URL}/fhir/Bundle", json=bundle, timeout=30)
-                    if resp.status_code == 201:
-                        st.success("✅ Condition stored with dual coding!")
-                        st.json(resp.json())
-                    else:
-                        st.error(f"❌ Failed to save bundle. Server responded with status {resp.status_code}:")
-                        st.json(resp.json())
-                except requests.exceptions.RequestException as e:
-                    st.error(f"❌ Error connecting to the backend: {e}")
+# -------------------
+# Run
+# -------------------
+if __name__ == "__main__":
+    load_namaste_data_from_github()
+    app.run(debug=True, port=5000)
+else:
+    # This runs when Gunicorn starts the app on Render
+    load_namaste_data_from_github()
 
