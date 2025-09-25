@@ -208,4 +208,3 @@ with bundle_tab:
                         st.json(resp.json())
                 except requests.exceptions.RequestException as e:
                     st.error(f"❌ Error connecting to the backend: {e}")
-
