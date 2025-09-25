@@ -116,7 +116,6 @@ if not query:
 else:
     query_lower = query.lower()
     
-    # --- UPDATED: Added a 5th tab for saving the bundle ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📘 NAMASTE", "🌍 WHO ICD-11 (Biomedicine)", "🌏 WHO ICD-11 (TM2)", "⚡ Combined Autocomplete", "🧾 Save Bundle"
     ])
@@ -146,36 +145,52 @@ else:
                 show_with_load_more(results, section_key="icd_tm2", source="icd-tm2")
 
     with tab4:
+        st.info("This tab shows a combined list of results from all sources, organized by category.")
         with st.spinner("Fetching combined results..."):
             try:
                 response = requests.get(f"{BACKEND_URL}/autocomplete", params={"q": query}, timeout=20)
                 response.raise_for_status()
                 all_results = response.json().get("results", [])
-                st.info("This tab shows a combined list of results from all available sources. Use the filter to narrow your view.")
-                filter_option = st.selectbox("Filter results by source:", ("All", "NAMASTE", "ICD-11", "ICD-11 (TM2)"))
+                
                 if all_results:
-                    filtered_data = []
-                    if filter_option == "All":
-                        filtered_data = all_results
-                    else:
-                        for row in all_results:
-                            if row.get('source') == filter_option:
-                                filtered_data.append(row)
-                    st.write(f"Displaying {len(filtered_data)} of {len(all_results)} total matches.")
-                    if not filtered_data:
-                        st.warning(f"No results found for the source '{filter_option}' in this search.")
-                    else:
-                        for row in filtered_data:
-                            with st.expander(f"**{row.get('source', 'N/A')}** | `{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
-                                st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
+                    # --- NEW: Separate results into lists for each column ---
+                    namaste_combined = [r for r in all_results if r.get('source') == 'NAMASTE']
+                    biomed_combined = [r for r in all_results if r.get('source') == 'ICD-11']
+                    tm2_combined = [r for r in all_results if r.get('source') == 'ICD-11 (TM2)']
+
+                    # --- NEW: Create three columns for the tabular view ---
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.subheader("NAMASTE")
+                        if not namaste_combined:
+                            st.write("No matches found.")
+                        for row in namaste_combined:
+                            with st.expander(f"`{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
+                                 st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
+
+                    with col2:
+                        st.subheader("ICD-11 Biomedicine")
+                        if not biomed_combined:
+                            st.write("No matches found.")
+                        for row in biomed_combined:
+                            with st.expander(f"`{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
+                                 st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
+
+                    with col3:
+                        st.subheader("ICD-11 TM2")
+                        if not tm2_combined:
+                            st.write("No matches found.")
+                        for row in tm2_combined:
+                            with st.expander(f"`{row.get('code', 'N/A')}` - {row.get('display', 'N/A')}"):
+                                 st.markdown(f"**System:** `{row.get('system', 'N/A')}`")
                 else:
                     st.info("No results found for this query.")
             except requests.exceptions.RequestException as e:
                 st.error(f"Failed to connect to autocomplete API: {e}")
 
-    # --- NEW: Bundle Save Section is now in its own tab ---
     with tab5:
-        st.subheader("🧾Save Condition to FHIR Bundle")
+        st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
         namaste_code = st.text_input("Enter NAMASTE code (e.g., NAM0001)")
         patient_id = st.text_input("Enter Patient ID", "Patient/001")
         if st.button("Save Condition Bundle"):
