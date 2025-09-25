@@ -83,7 +83,10 @@ def who_api_search(query, chapter_filter=None):
         params["chapterFilter"] = chapter_filter
     
     try:
-        r = requests.get(f"{API_URL}/mms/search", headers=headers, params=params, timeout=15)
+        # --- FIX: Added the specific API release version back into the URL ---
+        search_url = f"{API_URL}/2024-01/mms/search"
+        r = requests.get(search_url, headers=headers, params=params, timeout=15)
+        
         if r.status_code == 200:
             results = []
             for ent in r.json().get("destinationEntities", []):
@@ -212,3 +215,4 @@ if __name__ == "__main__":
 else:
     # This runs when Gunicorn starts the app on Render
     load_namaste_data_from_github()
+
