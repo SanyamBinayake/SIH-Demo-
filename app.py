@@ -261,37 +261,44 @@ with map_tab:
                             </div>
                             """, unsafe_allow_html=True)
                         else:
-                            # Display each match in a clean format
+                            # Display each match using Streamlit components instead of HTML
                             for i, match in enumerate(matches, 1):
                                 confidence_str = match.get('confidence', '0.000')
-                                confidence_class = get_confidence_class(confidence_str)
                                 confidence_label = format_confidence_label(confidence_str)
                                 method = match.get('method', 'unknown').replace('_', ' ').title()
                                 search_term = match.get('search_term', 'N/A')
                                 
-                                # Use Streamlit container for better layout control
+                                # Use Streamlit container with proper styling
                                 with st.container():
-                                    st.markdown(f"""
-                                    <div style="background-color: white; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                            <h5 style="margin: 0; color: #495057;">Match #{i}</h5>
-                                            <span class="{confidence_class}" style="padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;">{confidence_label}</span>
-                                        </div>
+                                    # Create a bordered container using Streamlit's native styling
+                                    st.markdown(f"**Match #{i}** - Confidence: {confidence_label}")
+                                    
+                                    # Create columns for better layout
+                                    info_col1, info_col2 = st.columns([2, 1])
+                                    
+                                    with info_col1:
+                                        st.markdown(f"**ICD-11 Code:** `{match.get('code', 'N/A')}`")
+                                        st.markdown(f"**Term:** {match.get('term', 'N/A')}")
                                         
-                                        <p><strong>ICD-11 Code:</strong> <code style="background-color: #F8F9FA; padding: 2px 6px; border-radius: 3px; color: #495057;">{match.get('code', 'N/A')}</code></p>
+                                        # Display definition in a quote format
+                                        definition = match.get('definition', 'No definition available.')
+                                        if len(definition) > 200:
+                                            definition = definition[:200] + "..."
+                                        st.markdown(f"**Definition:**")
+                                        st.info(definition)
+                                    
+                                    with info_col2:
+                                        # Display confidence as a metric
+                                        try:
+                                            conf_val = float(confidence_str)
+                                            st.metric("Confidence", f"{conf_val:.1%}")
+                                        except:
+                                            st.metric("Confidence", "Unknown")
                                         
-                                        <p><strong>Term:</strong> {match.get('term', 'N/A')}</p>
-                                        
-                                        <p><strong>Definition:</strong></p>
-                                        <div style="background-color: #F8F9FA; padding: 8px; border-radius: 4px; font-size: 14px; color: #6C757D;">
-                                            {match.get('definition', 'No definition available.')[:200]}{'...' if len(match.get('definition', '')) > 200 else ''}
-                                        </div>
-                                        
-                                        <div style="margin-top: 10px; font-size: 12px; color: #6C757D;">
-                                            <strong>Method:</strong> {method} | <strong>Search Term:</strong> "{search_term}"
-                                        </div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                        st.markdown(f"**Method:** {method}")
+                                        st.markdown(f"**Search Term:** `{search_term}`")
+                                    
+                                    st.divider()  # Add separator between matches
 
                 except requests.exceptions.RequestException as e:
                     st.error(f"🔴 Mapping failed. Could not connect to the backend: {e}")
