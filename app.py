@@ -51,7 +51,6 @@ st.markdown(f"""
 def load_all_data():
     """
     Loads all terminology CSVs into a dictionary of DataFrames.
-    This function is cached for performance. It ONLY performs data loading.
     """
     data = {"Ayurveda": None, "Unani": None, "Siddha": None}
     base_url = "https://raw.githubusercontent.com/SanyamBinayake/SIH-Demo-/main/"
@@ -60,11 +59,10 @@ def load_all_data():
         try:
             data[system] = pd.read_csv(base_url + f"{system}_Codes_Terms.csv")
         except Exception:
-            # If loading fails, assign an empty DataFrame. The error will be handled outside this function.
             data[system] = pd.DataFrame()
     return data
 
-def show_with_load_more(results, section_key, source="namaste", page_size=15):
+def show_with_load_more(results, section_key, source="namaste", page_size=5):
     """Displays results with a 'Load More' button."""
     if section_key not in st.session_state: st.session_state[section_key] = page_size
     visible_count = st.session_state[section_key]
@@ -80,6 +78,7 @@ def show_with_load_more(results, section_key, source="namaste", page_size=15):
                 st.markdown(f"**Explanation:** {row.get('Explanation', 'N/A')}")
 
     if len(results) > visible_count:
+        st.write(f"Showing {visible_count} of {len(results)}.")
         if st.button("Load More", key=f"load_more_{section_key}"):
             st.session_state[section_key] += page_size
             st.rerun()
@@ -98,12 +97,11 @@ def handle_api_request(endpoint, query):
 # --------------------
 all_data = load_all_data()
 
-# --- NEW: Check for data loading errors AFTER the cached function runs ---
 for system, df in all_data.items():
     if df.empty:
         st.error(f"Failed to load {system}_Codes_Terms.csv from GitHub. Please check the file path and repository.")
 
-# Create main tabs
+# --- NEW: Reorganized Main Tabs ---
 search_tab, map_tab, bundle_tab = st.tabs(["⚕️ Terminology Search", " NAMASTE <-> ICD-11 Mapper", "🧾 Save Bundle"])
 
 with search_tab:
@@ -115,33 +113,36 @@ with search_tab:
             if key in st.session_state: del st.session_state[key]
     
     if query:
-        st.subheader("NAMASTE Terminologies")
-        namaste_ayur, namaste_unani, namaste_siddha = st.tabs(["Ayurveda", "Unani", "Siddha"])
-        
-        for system, tab in [("Ayurveda", namaste_ayur), ("Unani", namaste_unani), ("Siddha", namaste_siddha)]:
-            with tab:
-                df = all_data[system]
-                if not df.empty:
-                    mask = df.apply(lambda row: any(query.lower() in str(cell).lower() for cell in row), axis=1)
-                    results = df[mask].to_dict("records")
-                    st.write(f"Found {len(results)} matches in {system}.")
-                    if results: show_with_load_more(results, system.lower(), "namaste")
-                else:
-                    st.warning(f"{system} data is not available.")
-        
-        st.subheader("WHO ICD-11 Terminologies")
-        icd_bio, icd_tm2 = st.tabs(["Biomedicine", "TM2"])
+        # --- NEW: Nested Tabs for NAMASTE and ICD ---
+        namaste_search_tab, icd_search_tab = st.tabs(["NAMASTE Terminologies", "WHO ICD-11 Terminologies"])
 
-        with icd_bio:
-            results = handle_api_request("/search", query)
-            st.write(f"Found {len(results)} matches.")
-            if results: show_with_load_more(results, "icd_bio", "icd")
-        with icd_tm2:
-            results = handle_api_request("/search/tm2", query)
-            st.write(f"Found {len(results)} matches.")
-            if results: show_with_load_more(results, "icd_tm2", "icd")
+        with namaste_search_tab:
+            ayur_tab, unani_tab, siddha_tab = st.tabs(["Ayurveda", "Unani", "Siddha"])
+            
+            for system, tab in [("Ayurveda", ayur_tab), ("Unani", unani_tab), ("Siddha", siddha_tab)]:
+                with tab:
+                    df = all_data[system]
+                    if not df.empty:
+                        mask = df.apply(lambda row: any(query.lower() in str(cell).lower() for cell in row), axis=1)
+                        results = df[mask].to_dict("records")
+                        st.write(f"Found {len(results)} matches.")
+                        if results: show_with_load_more(results, system.lower(), "namaste")
+                    else:
+                        st.warning(f"{system} data is not available.")
+        
+        with icd_search_tab:
+            bio_tab, tm2_tab = st.tabs(["Biomedicine", "TM2"])
+
+            with bio_tab:
+                results = handle_api_request("/search", query)
+                st.write(f"Found {len(results)} matches.")
+                if results: show_with_load_more(results, "icd_bio", "icd")
+            with tm2_tab:
+                results = handle_api_request("/search/tm2", query)
+                st.write(f"Found {len(results)} matches.")
+                if results: show_with_load_more(results, "icd_tm2", "icd")
     else:
-        st.info("Type a diagnosis in the search box above to begin.")
+        st.info("Type a diagnosis in the search box to begin.")
 
 with map_tab:
     st.subheader("Concept Mapper: Find the best ICD-11 match for a NAMASTE code")
@@ -197,7 +198,6 @@ with map_tab:
                     st.error(f"Mapping failed. Could not connect to the backend: {e}")
 
 with bundle_tab:
-    # (This section remains unchanged)
     st.subheader("🧾 Demo: Save Condition to FHIR Bundle")
     namaste_code = st.text_input("Enter NAMASTE code (e.g., AYU-AAA-1)", key="bundle_namaste_code")
     patient_id = st.text_input("Enter Patient ID", "Patient/001", key="bundle_patient_id")
